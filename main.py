@@ -1,6 +1,5 @@
 import os
 import time
-import tweepy
 import openai
 from telegram import Bot
 
