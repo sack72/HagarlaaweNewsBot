@@ -4,11 +4,11 @@ import tweepy
 import openai
 from telegram import Bot
 
-# API keys
-BEARER_TOKEN = "YOUR_TWITTER_BEARER_TOKEN"
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHANNEL = "@HagarlaaweMarkets"
-OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"
+# API keys from environment variables
+BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHANNEL = os.getenv("TELEGRAM_CHANNEL")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Set OpenAI key
 openai.api_key = OPENAI_API_KEY
