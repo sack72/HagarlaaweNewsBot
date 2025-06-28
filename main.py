@@ -7,26 +7,13 @@ import logging
 from telegram import Bot
 from telegram.error import TelegramError
 
-# Import the Google Generative AI library
-import google.generativeai as genai
-
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration (from Environment Variables) ---
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY") # New API Key for Finnhub
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY") # API Key for Finnhub
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-
-# --- Initialize Gemini ---
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    # Using 'gemini-1.0-pro' as a stable model version
-    gemini_model = genai.GenerativeModel('gemini-1.0-pro')
-else:
-    logging.error("GEMINI_API_KEY not set. Translation service will not work.")
-    gemini_model = None
 
 # --- Constants ---
 # Path for storing the last processed news timestamp
@@ -73,26 +60,6 @@ def fetch_latest_news_from_finnhub():
         logging.error(f"Response content: {response.text if response else 'N/A'}")
         return None
 
-def translate_text_with_gemini(text):
-    """Translates text to Somali using Google Gemini's Pro model."""
-    if not gemini_model:
-        logging.error("Gemini model not initialized. Cannot translate.")
-        logging.info(f"DEBUG: GEMINI_API_KEY present: {bool(GEMINI_API_KEY)}")
-        return "Translation service unavailable."
-
-    logging.info(f"DEBUG: Attempting Gemini translation for text length {len(text)}. Model: gemini-1.0-pro")
-    try:
-        prompt_parts = [
-            {"text": "You are a helpful assistant that translates financial news to clear and concise Somali. Provide only the translated text, without any additional remarks or conversational filler. If the text is not financial news, just translate it as is."},
-            {"text": f"Translate this financial news to Somali: {text}"}
-        ]
-        
-        response = gemini_model.generate_content(prompt_parts)
-        return response.text.strip()
-    except Exception as e:
-        logging.error(f"Error translating with Gemini: {e}")
-        return f"Translation failed: {e}"
-
 async def send_telegram_message(message):
     """Sends a message to the Telegram channel."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
@@ -110,7 +77,7 @@ async def send_telegram_message(message):
         logging.error(f"An unexpected error occurred while sending Telegram message: {e}")
 
 async def main_loop():
-    """Main loop to fetch, translate, and send news."""
+    """Main loop to fetch and send news."""
     logging.info("Bot started. Entering main loop...")
     
     # Send a startup message to Telegram for debugging purposes
@@ -151,19 +118,17 @@ async def main_loop():
                     
                     logging.info(f"Processing news: Headline: {headline}")
 
-                    # Combine headline and summary for translation
-                    text_to_translate = f"{headline}. {summary}" if summary and summary != 'No Summary' else headline
-                    translated_text = translate_text_with_gemini(text_to_translate)
+                    # --- Removed Gemini translation here ---
                     
-                    # Format message for Telegram
+                    # Format message for Telegram (English Only)
                     # Convert Unix timestamp to a readable datetime string (e.g., YYYY-MM-DD HH:MM UTC)
                     dt_object = datetime.fromtimestamp(article_timestamp, tz=timezone.utc)
                     formatted_time = dt_object.strftime('%Y-%m-%d %H:%M UTC')
 
                     telegram_message = (
                         f"**Finnhub News Update**\n"
-                        f"**Original (English):**\n`{headline}`\n\n"
-                        f"**Turjumid (Somali):**\n`{translated_text}`\n\n"
+                        f"**Headline:** `{headline}`\n\n"
+                        f"**Summary:** `{summary}`\n\n"
                         f"Source: {source}\n"
                         f"Time: {formatted_time}\n"
                         f"Full story: <a href='{url}'>Read More</a>"
@@ -189,7 +154,7 @@ async def main_loop():
 
 if __name__ == "__main__":
     # Ensure all critical environment variables are set before starting
-    required_vars = ["FINNHUB_API_KEY", "GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
+    required_vars = ["FINNHUB_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"] # GEMINI_API_KEY removed
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
