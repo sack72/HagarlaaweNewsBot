@@ -22,7 +22,7 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 # --- Initialize Gemini ---
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-pro')
+    gemini_model = genai.GenerativeModel('gemini-1.0-pro')
 else:
     logging.error("GEMINI_API_KEY not set. Translation service will not work.")
     gemini_model = None
