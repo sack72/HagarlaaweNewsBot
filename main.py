@@ -22,6 +22,7 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 # --- Initialize Gemini ---
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+    # Using 'gemini-1.0-pro' as a stable model version
     gemini_model = genai.GenerativeModel('gemini-1.0-pro')
 else:
     logging.error("GEMINI_API_KEY not set. Translation service will not work.")
@@ -61,26 +62,7 @@ def fetch_latest_news_from_finnhub():
         "token": FINNHUB_API_KEY,
         "category": "general" # Can be 'general', 'forex', 'crypto', etc.
     }
-    def translate_text_with_gemini(text):
-    """Translates text to Somali using Google Gemini's Pro model."""
-    if not gemini_model:
-        logging.error("Gemini model not initialized. Cannot translate.")
-        logging.info(f"DEBUG: GEMINI_API_KEY present: {bool(GEMINI_API_KEY)}") # Add this line
-        return "Translation service unavailable."
-
-    logging.info(f"DEBUG: Attempting Gemini translation for text length {len(text)}. Model: gemini-1.0-pro") # Add this line
-    try:
-        prompt_parts = [
-            {"text": "You are a helpful assistant that translates financial news to clear and concise Somali. Provide only the translated text, without any additional remarks or conversational filler. If the text is not financial news, just translate it as is."},
-            {"text": f"Translate this financial news to Somali: {text}"}
-        ]
-
-        response = gemini_model.generate_content(prompt_parts)
-        return response.text.strip()
-    except Exception as e:
-        logging.error(f"Error translating with Gemini: {e}")
-        return f"Translation failed: {e}"
-
+    
     logging.info("Fetching latest news from Finnhub...")
     try:
         response = requests.get(FINNHUB_NEWS_URL, params=params)
@@ -95,8 +77,10 @@ def translate_text_with_gemini(text):
     """Translates text to Somali using Google Gemini's Pro model."""
     if not gemini_model:
         logging.error("Gemini model not initialized. Cannot translate.")
+        logging.info(f"DEBUG: GEMINI_API_KEY present: {bool(GEMINI_API_KEY)}")
         return "Translation service unavailable."
 
+    logging.info(f"DEBUG: Attempting Gemini translation for text length {len(text)}. Model: gemini-1.0-pro")
     try:
         prompt_parts = [
             {"text": "You are a helpful assistant that translates financial news to clear and concise Somali. Provide only the translated text, without any additional remarks or conversational filler. If the text is not financial news, just translate it as is."},
