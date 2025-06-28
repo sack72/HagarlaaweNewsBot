@@ -14,76 +14,71 @@ import google.generativeai as genai
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration (from Environment Variables) ---
-TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
-TWITTER_USER_ID = os.getenv("TWITTER_USER_ID") # User ID for @financialjuice is 381696140
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # Changed from OPENAI_API_KEY
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY") # New API Key for Finnhub
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
-# --- Initialize Gemini (using your new API key) ---
+# --- Initialize Gemini ---
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    # Optional: Choose a model, e.g., "gemini-pro" for text-only tasks
     gemini_model = genai.GenerativeModel('gemini-pro')
 else:
     logging.error("GEMINI_API_KEY not set. Translation service will not work.")
     gemini_model = None
 
-
 # --- Constants ---
-# Path for storing the last processed tweet ID (Render's filesystem is ephemeral)
-LAST_TWEET_ID_FILE = "last_tweet_id.txt"
-# URL for Twitter API v2 user tweets timeline
-TWITTER_API_URL = f"https://api.twitter.com/2/users/{TWITTER_USER_ID}/tweets"
-
-# Headers for Twitter API requests
-TWITTER_HEADERS = {
-    "Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"
-}
+# Path for storing the last processed news timestamp
+LAST_PROCESSED_TIMESTAMP_FILE = "last_processed_timestamp.txt"
+# URL for Finnhub general news API
+FINNHUB_NEWS_URL = "https://finnhub.io/api/v1/news"
 
 # --- Functions ---
 
-def get_last_processed_tweet_id():
-    """Retrieves the last processed tweet ID from a file or environment variable."""
-    if os.path.exists(LAST_TWEET_ID_FILE):
-        with open(LAST_TWEET_ID_FILE, "r") as f:
-            return f.read().strip()
-    elif os.getenv("LAST_PROCESSED_TWEET_ID"):
-        return os.getenv("LAST_PROCESSED_TWEET_ID")
-    return None
+def get_last_processed_timestamp():
+    """Retrieves the last processed news timestamp (Unix epoch) from a file or environment variable."""
+    if os.path.exists(LAST_PROCESSED_TIMESTAMP_FILE):
+        with open(LAST_PROCESSED_TIMESTAMP_FILE, "r") as f:
+            try:
+                return int(f.read().strip())
+            except ValueError:
+                return 0 # Default to 0 if file is corrupted or empty
+    elif os.getenv("LAST_PROCESSED_TIMESTAMP"):
+        try:
+            return int(os.getenv("LAST_PROCESSED_TIMESTAMP"))
+        except ValueError:
+            return 0 # Default to 0 if env var is not a valid number
+    return 0 # Default to 0 (epoch start) if no previous record
 
-def save_last_processed_tweet_id(tweet_id):
-    """Saves the last processed tweet ID to a file."""
-    with open(LAST_TWEET_ID_FILE, "w") as f:
-        f.write(str(tweet_id))
+def save_last_processed_timestamp(timestamp):
+    """Saves the last processed news timestamp (Unix epoch) to a file."""
+    with open(LAST_PROCESSED_TIMESTAMP_FILE, "w") as f:
+        f.write(str(timestamp))
 
-def fetch_latest_tweets(since_id=None):
-    """Fetches latest tweets from the specified user."""
+def fetch_latest_news_from_finnhub():
+    """Fetches the latest general news from Finnhub."""
     params = {
-        "tweet.fields": "created_at",
-        "max_results": 5  # Fetch a small number to avoid overwhelming API/OpenAI
+        "token": FINNHUB_API_KEY,
+        "category": "general" # Can be 'general', 'forex', 'crypto', etc.
     }
-    if since_id:
-        params["since_id"] = since_id
     
-    logging.info(f"Fetching tweets from user ID {TWITTER_USER_ID} since ID {since_id if since_id else 'None'}...")
+    logging.info("Fetching latest news from Finnhub...")
     try:
-        response = requests.get(TWITTER_API_URL, headers=TWITTER_HEADERS, params=params)
-        response.raise_for_status()  # Raise an exception for HTTP errors
+        response = requests.get(FINNHUB_NEWS_URL, params=params)
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
         return response.json()
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching tweets: {e}")
+        logging.error(f"Error fetching news from Finnhub: {e}")
         logging.error(f"Response content: {response.text if response else 'N/A'}")
         return None
 
 def translate_text_with_gemini(text):
-    """Translates text to Somali using Google Gemini's GPT model."""
+    """Translates text to Somali using Google Gemini's Pro model."""
     if not gemini_model:
         logging.error("Gemini model not initialized. Cannot translate.")
         return "Translation service unavailable."
 
     try:
-        # Construct the prompt for Gemini
         prompt_parts = [
             {"text": "You are a helpful assistant that translates financial news to clear and concise Somali. Provide only the translated text, without any additional remarks or conversational filler. If the text is not financial news, just translate it as is."},
             {"text": f"Translate this financial news to Somali: {text}"}
@@ -103,7 +98,8 @@ async def send_telegram_message(message):
 
     try:
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=message, parse_mode='HTML')
+        # Disable web page preview to make the message cleaner by default
+        await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=message, parse_mode='HTML', disable_web_page_preview=True)
         logging.info("Message sent to Telegram.")
     except TelegramError as e:
         logging.error(f"Error sending message to Telegram: {e}")
@@ -111,59 +107,86 @@ async def send_telegram_message(message):
         logging.error(f"An unexpected error occurred while sending Telegram message: {e}")
 
 async def main_loop():
-    """Main loop to fetch, translate, and send tweets."""
+    """Main loop to fetch, translate, and send news."""
     logging.info("Bot started. Entering main loop...")
     
     # Send a startup message to Telegram for debugging purposes
     try:
         bot_telegram_startup = Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot_telegram_startup.send_message(chat_id=TELEGRAM_CHANNEL_ID, text="Bot has started and is checking for new tweets.", parse_mode='HTML')
+        await bot_telegram_startup.send_message(chat_id=TELEGRAM_CHANNEL_ID, text="Bot has started and is checking for new financial news from Finnhub.", parse_mode='HTML')
         logging.info("Startup message sent to Telegram.")
     except TelegramError as e:
-        logging.warning(f"Could not send startup message to Telegram (this might be fine if channel is not ready): {e}")
+        logging.warning(f"Could not send startup message to Telegram (this might be fine if channel is not ready or ID is not fully correct): {e}")
 
     while True:
-        last_id = get_last_processed_tweet_id()
-        data = fetch_latest_tweets(since_id=last_id)
+        last_timestamp = get_last_processed_timestamp()
+        
+        # Finnhub general news endpoint provides the latest news,
+        # we'll filter by timestamp client-side to find truly new articles.
+        news_data = fetch_latest_news_from_finnhub()
 
-        if data and 'data' in data:
-            tweets = sorted(data['data'], key=lambda x: int(x['id'])) # Sort to process oldest first
-            new_last_id = last_id
+        if news_data and isinstance(news_data, list): # Finnhub returns a list of news articles
+            # Filter for new articles (those with a timestamp greater than the last processed)
+            new_articles = [
+                article for article in news_data
+                if article.get('datetime', 0) > last_timestamp
+            ]
+            
+            # Sort new_articles by datetime (Unix timestamp) in ascending order to process oldest first
+            new_articles.sort(key=lambda x: x.get('datetime', 0))
 
-            for tweet in tweets:
-                tweet_id = tweet['id']
-                tweet_text = tweet['text']
-                
-                logging.info(f"Processing tweet ID: {tweet_id}")
-                logging.info(f"Original text: {tweet_text}")
+            if new_articles:
+                logging.info(f"Found {len(new_articles)} new articles from Finnhub.")
+                new_latest_timestamp = last_timestamp # Initialize with current last_timestamp
 
-                # Use Gemini for translation
-                translated_text = translate_text_with_gemini(tweet_text)
-                
-                # Format message for Telegram
-                telegram_message = (
-                    f"**Original (English):**\n`{tweet_text}`\n\n"
-                    f"**Turjumid (Somali):**\n`{translated_text}`\n\n"
-                    f"_[Source Tweet](https://twitter.com/{os.getenv('TWITTER_USERNAME', 'financialjuice')}/status/{tweet_id})_"
-                )
+                for article in new_articles:
+                    article_timestamp = article.get('datetime')
+                    headline = article.get('headline', 'No Headline')
+                    summary = article.get('summary', 'No Summary')
+                    source = article.get('source', 'Unknown Source')
+                    url = article.get('url', '#')
+                    
+                    logging.info(f"Processing news: Headline: {headline}")
 
-                await send_telegram_message(telegram_message)
-                new_last_id = tweet_id # Update ID after successful processing
+                    # Combine headline and summary for translation
+                    text_to_translate = f"{headline}. {summary}" if summary and summary != 'No Summary' else headline
+                    translated_text = translate_text_with_gemini(text_to_translate)
+                    
+                    # Format message for Telegram
+                    # Convert Unix timestamp to a readable datetime string (e.g., YYYY-MM-DD HH:MM UTC)
+                    dt_object = datetime.fromtimestamp(article_timestamp, tz=timezone.utc)
+                    formatted_time = dt_object.strftime('%Y-%m-%d %H:%M UTC')
 
-            if new_last_id and new_last_id != last_id:
-                save_last_processed_tweet_id(new_last_id)
-                logging.info(f"Updated last processed tweet ID to: {new_last_id}")
-        elif data is not None:
-            logging.info("No new tweets to process or 'data' field missing.")
+                    telegram_message = (
+                        f"**Finnhub News Update**\n"
+                        f"**Original (English):**\n`{headline}`\n\n"
+                        f"**Turjumid (Somali):**\n`{translated_text}`\n\n"
+                        f"Source: {source}\n"
+                        f"Time: {formatted_time}\n"
+                        f"Full story: <a href='{url}'>Read More</a>"
+                    )
+
+                    await send_telegram_message(telegram_message)
+                    # Update new_latest_timestamp with the highest timestamp processed in this batch
+                    new_latest_timestamp = max(new_latest_timestamp, article_timestamp) 
+
+                # Only save if we actually processed new articles and advanced the timestamp
+                if new_latest_timestamp > last_timestamp:
+                    save_last_processed_timestamp(new_latest_timestamp)
+                    logging.info(f"Updated last processed news timestamp to: {new_latest_timestamp}")
+            else:
+                logging.info("No new articles found from Finnhub since last check.")
+        elif news_data is not None:
+            logging.warning("Finnhub API returned empty list or unexpected data format.")
         else:
-            logging.error("Failed to fetch tweets (data is None).")
+            logging.error("Failed to fetch news from Finnhub (data is None).")
 
-        logging.info("Sleeping for 5 minutes...")
-        time.sleep(3600) # Sleep for 60 minutes
+        logging.info("Sleeping for 1 hour...")
+        time.sleep(3600) # Sleep for 1 hour (3600 seconds)
 
 if __name__ == "__main__":
     # Ensure all critical environment variables are set before starting
-    required_vars = ["TWITTER_BEARER_TOKEN", "TWITTER_USER_ID", "GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
+    required_vars = ["FINNHUB_API_KEY", "GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
