@@ -69,7 +69,7 @@ def fetch_latest_news_from_rss():
         if feed.bozo: # Check for parse errors (bozo = True indicates issues)
             logging.error(f"Error parsing RSS feed: {feed.bozo_exception}")
             return None
-        
+
         return feed.entries # Returns a list of news entries
     except Exception as e:
         logging.error(f"Error fetching or parsing RSS feed: {e}")
@@ -94,7 +94,7 @@ async def send_telegram_message(message):
 async def main_loop():
     """Main loop to fetch and send news."""
     logging.info("Bot started. Entering main loop...")
-    
+
     # Send a startup message to Telegram for debugging purposes
     try:
         bot_telegram_startup = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -105,7 +105,7 @@ async def main_loop():
 
     while True:
         last_timestamp = get_last_processed_timestamp()
-        
+
         news_entries = fetch_latest_news_from_rss()
 
         if news_entries and isinstance(news_entries, list):
@@ -124,7 +124,7 @@ async def main_loop():
                 if article_timestamp > last_timestamp:
                     entry.unix_timestamp = article_timestamp # Add unix_timestamp to entry for sorting/comparison
                     fresh_articles.append(entry)
-            
+
             # 2. Filter these fresh articles by INTEREST_KEYWORDS
             keyword_filtered_articles = []
             for article_entry in fresh_articles:
@@ -136,7 +136,7 @@ async def main_loop():
                     if keyword.lower() in headline or keyword.lower() in summary:
                         found_keyword = True
                         break # Found a keyword, no need to check others for this article
-                
+
                 if found_keyword:
                     keyword_filtered_articles.append(article_entry)
 
@@ -151,7 +151,7 @@ async def main_loop():
                     article_timestamp = article_entry.unix_timestamp
                     headline = article_entry.get('title', 'No Headline')
                     source = "FinancialJuice" 
-                    
+
                     logging.info(f"Processing news: Headline: {headline}")
 
                     # Format message for Telegram (English Only - Headline only, EAT Time)
@@ -189,7 +189,7 @@ if __name__ == "__main__":
     # Ensure all critical environment variables are set before starting
     required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
-    
+
     if missing_vars:
         logging.error(f"Missing required environment variables: {', '.join(missing_vars)}")
         logging.error("Please set them in Render's environment settings.")
