@@ -159,7 +159,7 @@ async def main_loop():
             logging.error("Failed to fetch tweets (data is None).")
 
         logging.info("Sleeping for 5 minutes...")
-        time.sleep(300) # Sleep for 5 minutes
+        time.sleep(3600) # Sleep for 60 minutes
 
 if __name__ == "__main__":
     # Ensure all critical environment variables are set before starting
