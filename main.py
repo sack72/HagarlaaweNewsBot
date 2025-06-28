@@ -22,8 +22,8 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 # Path for storing the last processed news timestamp
 LAST_PROCESSED_TIMESTAMP_FILE = "last_processed_timestamp.txt"
 
-# !!! IMPORTANT: REPLACE THIS WITH THE ACTUAL FINANCIALJUICE RSS FEED URL !!!
-FINANCIALJUICE_RSS_FEED_URL = "https://www.financialjuice.com/news-headlines.rss" # <--- REPLACE THIS PLACEHOLDER URL
+# !!! ACTUAL FINANCIALJUICE RSS FEED URL !!!
+FINANCIALJUICE_RSS_FEED_URL = "https://www.financialjuice.com/feed.ashx?xy=rss" # <--- This has been updated
 
 # Define your interest keywords here (case-insensitive search will be applied)
 INTEREST_KEYWORDS = [
@@ -33,7 +33,7 @@ INTEREST_KEYWORDS = [
     "btc", "eth", "bitcoin", "ethereum", "crypto", "cryptocurrency", # BTC & ETH News
     "gold", "xau", # Gold News
     "federal reserve", "secretary of finance", "treasury secretary", # Financial Political
-    "china us trade", "tariff", "trade war", "sanctions", "trade talks", "trade deal", # China-US Trade/Tariffs
+    "china us trade", "tariff", "trade war", "sanctions", "trade talks", "trade deal", # China-US Trade/Tariffss
     "markets", "stocks", "bonds", "commodities", "forex" # General market terms to catch broader news
 ]
 
