@@ -7,15 +7,28 @@ import logging
 from telegram import Bot
 from telegram.error import TelegramError
 
+# Import the Google Generative AI library
+import google.generativeai as genai
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration (from Environment Variables) ---
 TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
 TWITTER_USER_ID = os.getenv("TWITTER_USER_ID") # User ID for @financialjuice is 381696140
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # Changed from OPENAI_API_KEY
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+
+# --- Initialize Gemini (using your new API key) ---
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    # Optional: Choose a model, e.g., "gemini-pro" for text-only tasks
+    gemini_model = genai.GenerativeModel('gemini-pro')
+else:
+    logging.error("GEMINI_API_KEY not set. Translation service will not work.")
+    gemini_model = None
+
 
 # --- Constants ---
 # Path for storing the last processed tweet ID (Render's filesystem is ephemeral)
@@ -60,33 +73,26 @@ def fetch_latest_tweets(since_id=None):
         return response.json()
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching tweets: {e}")
-        time.sleep(15)
         logging.error(f"Response content: {response.text if response else 'N/A'}")
         return None
 
-def translate_text_with_openai(text):
-    """Translates text to Somali using OpenAI's GPT model."""
-    if not OPENAI_API_KEY:
-        logging.error("OpenAI API Key not set. Cannot translate.")
+def translate_text_with_gemini(text):
+    """Translates text to Somali using Google Gemini's GPT model."""
+    if not gemini_model:
+        logging.error("Gemini model not initialized. Cannot translate.")
         return "Translation service unavailable."
 
     try:
-        # Using the new OpenAI client
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that translates financial news to clear and concise Somali. Provide only the translated text, without any additional remarks or conversational filler. If the text is not financial news, just translate it as is."},
-                {"role": "user", "content": f"Translate this financial news to Somali: {text}"}
-            ],
-            max_tokens=200
-        )
-        # Accessing the message content correctly
-        return response.choices[0].message.content.strip()
+        # Construct the prompt for Gemini
+        prompt_parts = [
+            {"text": "You are a helpful assistant that translates financial news to clear and concise Somali. Provide only the translated text, without any additional remarks or conversational filler. If the text is not financial news, just translate it as is."},
+            {"text": f"Translate this financial news to Somali: {text}"}
+        ]
+        
+        response = gemini_model.generate_content(prompt_parts)
+        return response.text.strip()
     except Exception as e:
-        logging.error(f"Error translating with OpenAI: {e}")
+        logging.error(f"Error translating with Gemini: {e}")
         return f"Translation failed: {e}"
 
 async def send_telegram_message(message):
@@ -107,8 +113,15 @@ async def send_telegram_message(message):
 async def main_loop():
     """Main loop to fetch, translate, and send tweets."""
     logging.info("Bot started. Entering main loop...")
-    bot_telegram = Bot(token=TELEGRAM_BOT_TOKEN) # Initialize bot once for updates
     
+    # Send a startup message to Telegram for debugging purposes
+    try:
+        bot_telegram_startup = Bot(token=TELEGRAM_BOT_TOKEN)
+        await bot_telegram_startup.send_message(chat_id=TELEGRAM_CHANNEL_ID, text="Bot has started and is checking for new tweets.", parse_mode='HTML')
+        logging.info("Startup message sent to Telegram.")
+    except TelegramError as e:
+        logging.warning(f"Could not send startup message to Telegram (this might be fine if channel is not ready): {e}")
+
     while True:
         last_id = get_last_processed_tweet_id()
         data = fetch_latest_tweets(since_id=last_id)
@@ -124,15 +137,14 @@ async def main_loop():
                 logging.info(f"Processing tweet ID: {tweet_id}")
                 logging.info(f"Original text: {tweet_text}")
 
-                translated_text = translate_text_with_openai(tweet_text)
+                # Use Gemini for translation
+                translated_text = translate_text_with_gemini(tweet_text)
                 
                 # Format message for Telegram
                 telegram_message = (
                     f"**Original (English):**\n`{tweet_text}`\n\n"
                     f"**Turjumid (Somali):**\n`{translated_text}`\n\n"
                     f"_[Source Tweet](https://twitter.com/{os.getenv('TWITTER_USERNAME', 'financialjuice')}/status/{tweet_id})_"
-                    # Note: We use TWITTER_USERNAME env var here, or default to financialjuice
-                    # You might need to add TWITTER_USERNAME env var if you want it dynamic in link
                 )
 
                 await send_telegram_message(telegram_message)
@@ -151,7 +163,7 @@ async def main_loop():
 
 if __name__ == "__main__":
     # Ensure all critical environment variables are set before starting
-    required_vars = ["TWITTER_BEARER_TOKEN", "TWITTER_USER_ID", "OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
+    required_vars = ["TWITTER_BEARER_TOKEN", "TWITTER_USER_ID", "GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
