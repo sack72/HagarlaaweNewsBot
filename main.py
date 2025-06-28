@@ -159,17 +159,11 @@ async def main_loop():
                     
                     logging.info(f"Processing news: Headline: {headline}")
 
-                    # Format message for Telegram (English Only - Headline only, EAT Time)
-                    # Convert Unix timestamp to datetime object, then to EAT
-                    dt_object_utc = datetime.fromtimestamp(article_timestamp, tz=pytz.utc)
-                    dt_object_eat = dt_object_utc.astimezone(EAST_AFRICA_TIMEZONE)
-                    formatted_time_eat = dt_object_eat.strftime('%Y-%m-%d %H:%M EAT')
-
+                    # Format message for Telegram (English Only - Headline only)
                     telegram_message = (
                         f"<b>Hagarlaawe Markets News Update</b>\n" # Main title in the Telegram message
-                        f"<b>Headline:</b> {headline}\n\n"
-                        f"Source: {source}\n"
-                        f"Time: {formatted_time_eat}"
+                        f"<b>DEGDEG:</b> {headline}\n\n" # Changed "Headline" to "DEGDEG"
+                        f"Source: {source}" # Removed the "Time" line
                     )
 
                     await send_telegram_message(telegram_message)
