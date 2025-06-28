@@ -2,10 +2,11 @@ import os
 import requests
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 import logging
 from telegram import Bot
 from telegram.error import TelegramError
+import pytz # Import the pytz library for timezone handling
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,6 +21,21 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 LAST_PROCESSED_TIMESTAMP_FILE = "last_processed_timestamp.txt"
 # URL for Finnhub general news API
 FINNHUB_NEWS_URL = "https://finnhub.io/api/v1/news"
+
+# Define your interest keywords here (case-insensitive search will be applied)
+INTEREST_KEYWORDS = [
+    "usd", "eur", "jpy", "gbp", "cad", "aud", "nzd", "chf", # G8 Currencies
+    "economic data", "inflation", "gdp", "unemployment", "interest rates", # Economic Data
+    "central bank", "fed", "ecb", "boj", "boe", "rba", "rbnz", "snb", "boc", # Central Banks
+    "btc", "eth", "bitcoin", "ethereum", "crypto", "cryptocurrency", # BTC & ETH News
+    "gold", "xau", # Gold News
+    "federal reserve", "secretary of finance", "treasury secretary", # Financial Political
+    "china us trade", "tariff", "trade war", "sanctions", "trade talks", "trade deal", # China-US Trade/Tariffs
+    "markets", "stocks", "bonds", "commodities", "forex" # General market terms to catch broader news
+]
+
+# Define East Africa Timezone
+EAST_AFRICA_TIMEZONE = pytz.timezone('Africa/Nairobi')
 
 # --- Functions ---
 
@@ -47,7 +63,7 @@ def fetch_latest_news_from_finnhub():
     """Fetches the latest general news from Finnhub."""
     params = {
         "token": FINNHUB_API_KEY,
-        "category": "general" # Can be 'general', 'forex', 'crypto', etc.
+        "category": "general" # Using 'general' to get a broad set of news for keyword filtering
     }
     
     logging.info("Fetching latest news from Finnhub...")
@@ -83,7 +99,7 @@ async def main_loop():
     # Send a startup message to Telegram for debugging purposes
     try:
         bot_telegram_startup = Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot_telegram_startup.send_message(chat_id=TELEGRAM_CHANNEL_ID, text="Bot has started and is checking for new financial news from Finnhub.", parse_mode='HTML')
+        await bot_telegram_startup.send_message(chat_id=TELEGRAM_CHANNEL_ID, text="Bot has started and is checking for new financial news from Finnhub. Posts will be filtered by keywords and timestamps are in EAT.", parse_mode='HTML')
         logging.info("Startup message sent to Telegram.")
     except TelegramError as e:
         logging.warning(f"Could not send startup message to Telegram (this might be fine if channel is not ready or ID is not fully correct): {e}")
@@ -91,47 +107,58 @@ async def main_loop():
     while True:
         last_timestamp = get_last_processed_timestamp()
         
-        # Finnhub general news endpoint provides the latest news,
-        # we'll filter by timestamp client-side to find truly new articles.
         news_data = fetch_latest_news_from_finnhub()
 
-        if news_data and isinstance(news_data, list): # Finnhub returns a list of news articles
-            # Filter for new articles (those with a timestamp greater than the last processed)
-            new_articles = [
+        if news_data and isinstance(news_data, list):
+            # 1. Filter for new articles (those with a timestamp greater than the last processed)
+            fresh_articles = [
                 article for article in news_data
                 if article.get('datetime', 0) > last_timestamp
             ]
             
-            # Sort new_articles by datetime (Unix timestamp) in ascending order to process oldest first
-            new_articles.sort(key=lambda x: x.get('datetime', 0))
+            # 2. Filter these fresh articles by INTEREST_KEYWORDS
+            filtered_articles_by_keywords = []
+            for article in fresh_articles:
+                headline = article.get('headline', '').lower() # Convert to lowercase for case-insensitive search
+                summary = article.get('summary', '').lower()
 
-            if new_articles:
-                logging.info(f"Found {len(new_articles)} new articles from Finnhub.")
+                found_keyword = False
+                for keyword in INTEREST_KEYWORDS:
+                    if keyword.lower() in headline or keyword.lower() in summary:
+                        found_keyword = True
+                        break # Found a keyword, no need to check others for this article
+                
+                if found_keyword:
+                    filtered_articles_by_keywords.append(article)
+
+            # Sort the filtered articles by datetime (Unix timestamp) in ascending order to process oldest first
+            filtered_articles_by_keywords.sort(key=lambda x: x.get('datetime', 0))
+
+            if filtered_articles_by_keywords:
+                logging.info(f"Found {len(filtered_articles_by_keywords)} new articles matching your topics from Finnhub.")
                 new_latest_timestamp = last_timestamp # Initialize with current last_timestamp
 
-                for article in new_articles:
+                for article in filtered_articles_by_keywords:
                     article_timestamp = article.get('datetime')
                     headline = article.get('headline', 'No Headline')
-                    summary = article.get('summary', 'No Summary')
+                    # summary = article.get('summary', 'No Summary') # Summary no longer used in output
                     source = article.get('source', 'Unknown Source')
                     url = article.get('url', '#')
                     
                     logging.info(f"Processing news: Headline: {headline}")
 
-                    # --- Removed Gemini translation here ---
-                    
-                    # Format message for Telegram (English Only)
-                    # Convert Unix timestamp to a readable datetime string (e.g., YYYY-MM-DD HH:MM UTC)
-                    dt_object = datetime.fromtimestamp(article_timestamp, tz=timezone.utc)
-                    formatted_time = dt_object.strftime('%Y-%m-%d %H:%M UTC')
+                    # Format message for Telegram (English Only - Headline only, EAT Time)
+                    # Convert Unix timestamp to datetime object, then to EAT
+                    dt_object_utc = datetime.fromtimestamp(article_timestamp, tz=pytz.utc)
+                    dt_object_eat = dt_object_utc.astimezone(EAST_AFRICA_TIMEZONE)
+                    formatted_time_eat = dt_object_eat.strftime('%Y-%m-%d %H:%M EAT')
 
                     telegram_message = (
-                        f"**Finnhub News Update**\n"
-                        f"**Headline:** `{headline}`\n\n"
-                        f"**Summary:** `{summary}`\n\n"
+                        f"<b>Finnhub News Update</b>\n" # Bolding Finnhub News Update title
+                        f"<b>Headline:</b> {headline}\n\n" # Bolding Headline title
                         f"Source: {source}\n"
-                        f"Time: {formatted_time}\n"
-                        f"Full story: <a href='{url}'>Read More</a>"
+                        f"Time: {formatted_time_eat}" # Time in EAT
+                        # Removed "Summary" and "Full story: <a href='{url}'>Read More</a>"
                     )
 
                     await send_telegram_message(telegram_message)
@@ -143,18 +170,18 @@ async def main_loop():
                     save_last_processed_timestamp(new_latest_timestamp)
                     logging.info(f"Updated last processed news timestamp to: {new_latest_timestamp}")
             else:
-                logging.info("No new articles found from Finnhub since last check.")
+                logging.info("No new articles matching your topics found since last check.")
         elif news_data is not None:
             logging.warning("Finnhub API returned empty list or unexpected data format.")
         else:
             logging.error("Failed to fetch news from Finnhub (data is None).")
 
-        logging.info("Sleeping for 1 hour...")
-        time.sleep(3600) # Sleep for 1 hour (3600 seconds)
+        logging.info("Sleeping for 60 seconds for next check...")
+        time.sleep(60) # Sleep for 60 seconds (1 minute)
 
 if __name__ == "__main__":
     # Ensure all critical environment variables are set before starting
-    required_vars = ["FINNHUB_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"] # GEMINI_API_KEY removed
+    required_vars = ["FINNHUB_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
