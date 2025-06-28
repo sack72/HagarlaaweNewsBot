@@ -59,7 +59,7 @@ def fetch_latest_tweets(since_id=None):
         response.raise_for_status()  # Raise an exception for HTTP errors
         return response.json()
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching tweets: {e}")time.sleep15
+        logging.error(f"Error fetching tweets: {e}") time.sleep(15)
         logging.error(f"Response content: {response.text if response else 'N/A'}")
         return None
 
