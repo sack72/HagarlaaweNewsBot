@@ -32,7 +32,7 @@ INTEREST_KEYWORDS = [
     "btc", "eth", "bitcoin", "ethereum", "crypto", "cryptocurrency", # BTC & ETH News
     "gold", "xau", # Gold News
     "federal reserve", "secretary of finance", "treasury secretary", # Financial Political
-    "china us trade", "tariff", "trade war", "sanctions", "trade talks", "trade deal", # China-US Trade/Tariffss
+    "china us trade", "tariff", "trade war", "sanctions", "trade talks", "trade deal", # China-US Trade/Tariffs
     "markets", "stocks", "bonds", "commodities", "forex" # General market terms to catch broader news
 ]
 
@@ -150,8 +150,12 @@ async def main_loop():
                 for article_entry in keyword_filtered_articles:
                     article_timestamp = article_entry.unix_timestamp
                     headline = article_entry.get('title', 'No Headline')
-                    # Set source to your desired name
-                    source = "Hagarlaawe" # <--- Changed this line
+                    
+                    # Clean the headline: remove "FinancialJuice: " if it's present at the beginning
+                    if headline.lower().startswith("financialjuice:"):
+                        headline = headline[len("financialjuice:"):].strip()
+                    
+                    source = "Hagarlaawe" # This sets the source to Hagarlaawe
                     
                     logging.info(f"Processing news: Headline: {headline}")
 
@@ -162,7 +166,7 @@ async def main_loop():
                     formatted_time_eat = dt_object_eat.strftime('%Y-%m-%d %H:%M EAT')
 
                     telegram_message = (
-                        f"<b>Hagarlaawe Markets News Update</b>\n" # <--- Changed this line
+                        f"<b>Hagarlaawe Markets News Update</b>\n" # Main title in the Telegram message
                         f"<b>Headline:</b> {headline}\n\n"
                         f"Source: {source}\n"
                         f"Time: {formatted_time_eat}"
