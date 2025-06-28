@@ -14,7 +14,6 @@ import calendar # For converting parsed time to Unix timestamp
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration (from Environment Variables) ---
-# FINNHUB_API_KEY is no longer needed for RSS feed
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
@@ -22,8 +21,8 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 # Path for storing the last processed news timestamp
 LAST_PROCESSED_TIMESTAMP_FILE = "last_processed_timestamp.txt"
 
-# !!! ACTUAL FINANCIALJUICE RSS FEED URL !!!
-FINANCIALJUICE_RSS_FEED_URL = "https://www.financialjuice.com/feed.ashx?xy=rss" # <--- This has been updated
+# ACTUAL FINANCIALJUICE RSS FEED URL
+FINANCIALJUICE_RSS_FEED_URL = "https://www.financialjuice.com/feed.ashx?xy=rss"
 
 # Define your interest keywords here (case-insensitive search will be applied)
 INTEREST_KEYWORDS = [
@@ -33,7 +32,7 @@ INTEREST_KEYWORDS = [
     "btc", "eth", "bitcoin", "ethereum", "crypto", "cryptocurrency", # BTC & ETH News
     "gold", "xau", # Gold News
     "federal reserve", "secretary of finance", "treasury secretary", # Financial Political
-    "china us trade", "tariff", "trade war", "sanctions", "trade talks", "trade deal", # China-US Trade/Tariffss
+    "china us trade", "tariff", "trade war", "sanctions", "trade talks", "trade deal", # China-US Trade/Tariffs
     "markets", "stocks", "bonds", "commodities", "forex" # General market terms to catch broader news
 ]
 
@@ -151,9 +150,7 @@ async def main_loop():
                 for article_entry in keyword_filtered_articles:
                     article_timestamp = article_entry.unix_timestamp
                     headline = article_entry.get('title', 'No Headline')
-                    # Source for RSS is often the feed's title, or implicit
                     source = "FinancialJuice" 
-                    # url = article_entry.get('link', '#') # URL no longer used as per "no read more"
                     
                     logging.info(f"Processing news: Headline: {headline}")
 
@@ -191,7 +188,6 @@ async def main_loop():
 if __name__ == "__main__":
     # Ensure all critical environment variables are set before starting
     required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
-    # Removed FINNHUB_API_KEY from required_vars as it's no longer used
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
