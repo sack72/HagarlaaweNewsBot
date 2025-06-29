@@ -125,20 +125,9 @@ async def main_loop():
                     entry.unix_timestamp = article_timestamp # Add unix_timestamp to entry for sorting/comparison
                     fresh_articles.append(entry)
             
-            # 2. Filter these fresh articles by INTEREST_KEYWORDS
-            keyword_filtered_articles = []
-            for article_entry in fresh_articles:
-                headline = article_entry.get('title', '').lower() # RSS entry title
-                summary = article_entry.get('summary', '').lower() if hasattr(article_entry, 'summary') else '' # RSS entry summary
-
-                found_keyword = False
-                for keyword in INTEREST_KEYWORDS:
-                    if keyword.lower() in headline or keyword.lower() in summary:
-                        found_keyword = True
-                        break # Found a keyword, no need to check others for this article
-                
-                if found_keyword:
-                    keyword_filtered_articles.append(article_entry)
+                        # Now, keyword_filtered_articles will simply be all fresh_articles,
+            # effectively removing the keyword filter.
+            keyword_filtered_articles = fresh_articles
 
             # Sort the filtered articles by datetime (Unix timestamp) in ascending order to process oldest first
             keyword_filtered_articles.sort(key=lambda x: x.unix_timestamp)
