@@ -25,6 +25,9 @@ LAST_PROCESSED_TIMESTAMP_FILE = "last_processed_timestamp.txt"
 FINANCIALJUICE_RSS_FEED_URL = "https://www.financialjuice.com/feed.ashx?xy=rss"
 
 # Define your interest keywords here (case-insensitive search will be applied)
+# Note: You currently have a line in your code that effectively removes this filter:
+# "keyword_filtered_articles = fresh_articles"
+# If you want to re-enable keyword filtering, you'll need to adjust that line.
 INTEREST_KEYWORDS = [
     "usd", "eur", "jpy", "gbp", "cad", "aud", "nzd", "chf", # G8 Currencies
     "economic data", "inflation", "gdp", "unemployment", "interest rates", # Economic Data
@@ -125,8 +128,8 @@ async def main_loop():
                     entry.unix_timestamp = article_timestamp # Add unix_timestamp to entry for sorting/comparison
                     fresh_articles.append(entry)
             
-                        # Now, keyword_filtered_articles will simply be all fresh_articles,
-            # effectively removing the keyword filter.
+            # This line effectively disables keyword filtering. If you want to re-enable it
+            # and filter by INTEREST_KEYWORDS, you would need to implement the filtering logic here.
             keyword_filtered_articles = fresh_articles
 
             # Sort the filtered articles by datetime (Unix timestamp) in ascending order to process oldest first
@@ -144,16 +147,15 @@ async def main_loop():
                     if headline.lower().startswith("financialjuice:"):
                         headline = headline[len("financialjuice:"):].strip()
                     
-                    source = "Hagarlaawe" # This sets the source to Hagarlaawe
-                    
                     logging.info(f"Processing news: Headline: {headline}")
 
-                    # Format message for Telegram (English Only - Headline only)
+                    # --- MODIFICATION STARTS HERE ---
+                    # Added '🔴' before 'DEGDEG:'
                     telegram_message = (
-                        f"<b>Hagarlaawe Markets News Update</b>\n" # Main title in the Telegram message
-                        f"<b>DEGDEG:</b> {headline}\n\n" # Changed "Headline" to "DEGDEG"
-                        f"Source: {source}" # Removed the "Time" line
+                        f"🔴<b>DEGDEG:</b> {headline}\n\n"
+                        f"Source:"
                     )
+                    # --- MODIFICATION ENDS HERE ---
 
                     await send_telegram_message(telegram_message)
                     # Update new_latest_timestamp with the highest timestamp processed in this batch
