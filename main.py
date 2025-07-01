@@ -6,9 +6,14 @@ from datetime import datetime
 import logging
 from telegram import Bot
 from telegram.error import TelegramError
-import pytz # Import the pytz library for timezone handling
-import feedparser # Import the feedparser library
-import calendar # For converting parsed time to Unix timestamp
+import pytz
+import feedparser
+import calendar
+
+# --- NEW IMPORTS FOR OPENAI ---
+from openai import OpenAI
+from openai import APIError # Specific error for OpenAI API issues
+# --- END NEW IMPORTS ---
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,12 +21,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Configuration (from Environment Variables) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") # --- NEW: Get OpenAI API Key ---
 
 # --- Constants ---
-# Path for storing the last processed news timestamp
 LAST_PROCESSED_TIMESTAMP_FILE = "last_processed_timestamp.txt"
-
-# ACTUAL FINANCIALJUICE RSS FEED URL
 FINANCIALJUICE_RSS_FEED_URL = "https://www.financialjuice.com/feed.ashx?xy=rss"
 
 # Define your interest keywords here (case-insensitive search will be applied)
@@ -39,8 +42,16 @@ INTEREST_KEYWORDS = [
     "markets", "stocks", "bonds", "commodities", "forex" # General market terms to catch broader news
 ]
 
-# Define East Africa Timezone
 EAST_AFRICA_TIMEZONE = pytz.timezone('Africa/Nairobi')
+
+# --- NEW: Initialize OpenAI Client ---
+# Only initialize if the API key is present
+openai_client = None
+if OPENAI_API_KEY:
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+else:
+    logging.error("OPENAI_API_KEY not set. Translation functionality will be disabled.")
+# --- END NEW ---
 
 # --- Functions ---
 
@@ -56,7 +67,7 @@ def get_last_processed_timestamp():
         try:
             return int(os.getenv("LAST_PROCESSED_TIMESTAMP"))
         except ValueError:
-            return 0 # Default to 0 if env var is not a valid number
+                return 0 # Default to 0 if env var is not a valid number
     return 0 # Default to 0 (epoch start) if no previous record
 
 def save_last_processed_timestamp(timestamp):
@@ -86,13 +97,43 @@ async def send_telegram_message(message):
 
     try:
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        # Disable web page preview to make the message cleaner by default
         await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=message, parse_mode='HTML', disable_web_page_preview=True)
         logging.info("Message sent to Telegram.")
     except TelegramError as e:
         logging.error(f"Error sending message to Telegram: {e}")
     except Exception as e:
         logging.error(f"An unexpected error occurred while sending Telegram message: {e}")
+
+# --- Translation Function using OpenAI ---
+async def translate_text_openai(text_to_translate, target_language="Somali"):
+    """
+    Translates text using the OpenAI Chat Completions API.
+    Returns the translated text or original text on failure.
+    """
+    if not openai_client:
+        logging.warning("OpenAI client not initialized (API key missing). Skipping translation.")
+        return text_to_translate # Return original if API key is missing
+
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini", # **CONFIRMED MODEL TO USE**
+            messages=[
+                {"role": "system", "content": f"You are a helpful assistant that translates financial news headlines accurately and concisely into {target_language}. Maintain the serious tone of news and focus on financial terminology."},
+                {"role": "user", "content": f"Translate the following English financial news headline into {target_language} and provide only the translated text, do not add anything else:\n\n'{text_to_translate}'"}
+            ],
+            temperature=0.7, # Controls randomness. Lower for more consistent results.
+            max_tokens=100 # Max tokens for the response, sufficient for headlines
+        )
+        translated_text = response.choices[0].message.content.strip()
+        logging.info(f"Translated '{text_to_translate}' to '{translated_text}'")
+        return translated_text
+    except APIError as e:
+        logging.error(f"OpenAI API error during translation: {e}")
+        return text_to_translate # Return original on API error
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during OpenAI translation: {e}")
+        return text_to_translate # Return original on other errors
+# --- END NEW ---
 
 async def main_loop():
     """Main loop to fetch and send news."""
@@ -101,7 +142,7 @@ async def main_loop():
     # Send a startup message to Telegram for debugging purposes
     try:
         bot_telegram_startup = Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot_telegram_startup.send_message(chat_id=TELEGRAM_CHANNEL_ID, text="Bot has started and is checking for new financial news from FinancialJuice RSS. Posts will be filtered by topics and timestamps are in EAT.", parse_mode='HTML')
+        await bot_telegram_startup.send_message(chat_id=TELEGRAM_CHANNEL_ID, text="Bot has started and is checking for new financial news from FinancialJuice RSS. Posts will be filtered by topics and timestamps are in EAT. Now with Somali translation.", parse_mode='HTML') # Updated startup message
         logging.info("Startup message sent to Telegram.")
     except TelegramError as e:
         logging.warning(f"Could not send startup message to Telegram (this might be fine if channel is not ready or ID is not fully correct): {e}")
@@ -112,79 +153,70 @@ async def main_loop():
         news_entries = fetch_latest_news_from_rss()
 
         if news_entries and isinstance(news_entries, list):
-            # 1. Filter for new articles (those with a timestamp greater than the last processed)
             fresh_articles = []
             for entry in news_entries:
-                # Use entry.published_parsed for the timestamp, convert to Unix epoch
                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                    # Convert time.struct_time (which is UTC from RSS generally) to Unix timestamp
                     article_timestamp = calendar.timegm(entry.published_parsed)
                 else:
-                    # Fallback if published_parsed is missing, use current time
                     article_timestamp = int(time.time())
                     logging.warning(f"RSS entry '{entry.title if hasattr(entry, 'title') else 'No title'}' missing published date. Using current time.")
 
                 if article_timestamp > last_timestamp:
-                    entry.unix_timestamp = article_timestamp # Add unix_timestamp to entry for sorting/comparison
+                    entry.unix_timestamp = article_timestamp
                     fresh_articles.append(entry)
             
-            # This line effectively disables keyword filtering. If you want to re-enable it
-            # and filter by INTEREST_KEYWORDS, you would need to implement the filtering logic here.
             keyword_filtered_articles = fresh_articles
-
-            # Sort the filtered articles by datetime (Unix timestamp) in ascending order to process oldest first
             keyword_filtered_articles.sort(key=lambda x: x.unix_timestamp)
 
             if keyword_filtered_articles:
-                logging.info(f"Found {len(keyword_filtered_articles)} new articles matching your criteria from FinancialJuice RSS.")
-                new_latest_timestamp = last_timestamp # Initialize with current last_timestamp
+                logging.info(f"Found {len(keyword_filtered_articles)} new articles from FinancialJuice RSS.")
+                new_latest_timestamp = last_timestamp
 
                 for article_entry in keyword_filtered_articles:
                     article_timestamp = article_entry.unix_timestamp
-                    headline = article_entry.get('title', 'No Headline')
+                    english_headline = article_entry.get('title', 'No Headline')
                     
-                    # Clean the headline: remove "FinancialJuice: " if it's present at the beginning
-                    if headline.lower().startswith("financialjuice:"):
-                        headline = headline[len("financialjuice:"):].strip()
+                    if english_headline.lower().startswith("financialjuice:"):
+                        english_headline = english_headline[len("financialjuice:"):].strip()
                     
-                    logging.info(f"Processing news: Headline: {headline}")
+                    logging.info(f"Processing news: English Headline: {english_headline}")
 
-                    # --- MODIFICATION STARTS HERE ---
-                    # Added '🔴' before 'DEGDEG:'
+                    # --- Call OpenAI for translation ---
+                    somali_headline = await translate_text_openai(english_headline, target_language="Somali")
+                    # If translation fails, somali_headline will be the original English headline
+                    # --- END NEW ---
+
+                    # Use the translated headline in the Telegram message
                     telegram_message = (
-                        f"🔴<b>DEGDEG:</b> {headline}\n\n"
+                        f"🔴<b>DEGDEG:</b> {somali_headline}\n\n" # Use translated headline
                         f"Source:"
                     )
-                    # --- MODIFICATION ENDS HERE ---
 
                     await send_telegram_message(telegram_message)
-                    # Update new_latest_timestamp with the highest timestamp processed in this batch
                     new_latest_timestamp = max(new_latest_timestamp, article_timestamp) 
 
-                # Only save if we actually processed new articles and advanced the timestamp
                 if new_latest_timestamp > last_timestamp:
                     save_last_processed_timestamp(new_latest_timestamp)
                     logging.info(f"Updated last processed news timestamp to: {new_latest_timestamp}")
             else:
-                logging.info("No new articles matching your criteria found since last check.")
+                logging.info("No new articles found since last check.")
         elif news_entries is not None:
             logging.warning("RSS feed returned no entries or unexpected data format.")
         else:
             logging.error("Failed to fetch news from RSS feed (data is None).")
 
         logging.info("Sleeping for 60 seconds for next check...")
-        time.sleep(60) # Sleep for 60 seconds (1 minute)
+        time.sleep(60)
 
 if __name__ == "__main__":
-    # Ensure all critical environment variables are set before starting
-    required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
+    required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID", "OPENAI_API_KEY"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
         logging.error(f"Missing required environment variables: {', '.join(missing_vars)}")
         logging.error("Please set them in Render's environment settings.")
-        exit(1) # Exit if critical variables are missing
+        exit(1)
 
-    # Initialize and run the bot using asyncio for Telegram's async methods
     import asyncio
     asyncio.run(main_loop())
+
