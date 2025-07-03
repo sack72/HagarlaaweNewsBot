@@ -122,6 +122,11 @@ async def translate_text_libretranslate(text_to_translate, target_language="som"
         logging.warning("LibreTranslate API URL not set. Skipping translation.")
         return text_to_translate # Return original if URL is missing
 
+    # Ensure text_to_translate is not empty or none
+    if not text_to_translate or not text_to_translate.strip():
+        logging.warning("No text provided for translation. Skipping LibreTranslate call.")
+        return text_to_translate
+
     try:
         headers = {'Content-Type': 'application/json'}
         payload = {
@@ -133,9 +138,20 @@ async def translate_text_libretranslate(text_to_translate, target_language="som"
         if LIBRETRANSLATE_API_KEY:
             payload["api_key"] = LIBRETRANSLATE_API_KEY
 
+        logging.info(f"Attempting LibreTranslate for: '{text_to_translate[:50]}...' with payload: {payload}") # New debug log
+
         async with aiohttp.ClientSession() as session:
             async with session.post(LIBRETRANSLATE_API_URL, headers=headers, json=payload) as response:
-                response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+                # Log the response status before raising for status
+                logging.info(f"LibreTranslate response status: {response.status}") # New debug log
+                
+                # If the status is 400 or higher, get the error message from the response body
+                if response.status >= 400:
+                    error_data = await response.json()
+                    logging.error(f"LibreTranslate API returned error {response.status}: {error_data}") # New debug log
+                    # No need to raise_for_status if we handle it here and return original text
+                    return text_to_translate # Return original on API error
+
                 data = await response.json()
 
                 if 'translatedText' in data:
@@ -146,7 +162,7 @@ async def translate_text_libretranslate(text_to_translate, target_language="som"
                     logging.error(f"LibreTranslate response missing 'translatedText': {data}")
                     return text_to_translate
     except aiohttp.ClientError as e:
-        logging.error(f"LibreTranslate API request error: {e}")
+        logging.error(f"LibreTranslate API request error (aiohttp): {e}")
         return text_to_translate
     except json.JSONDecodeError as e:
         logging.error(f"Error decoding LibreTranslate response JSON: {e}")
