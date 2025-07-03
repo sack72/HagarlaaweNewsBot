@@ -27,19 +27,38 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") # --- NEW: Get OpenAI API Key ---
 LAST_PROCESSED_TIMESTAMP_FILE = "last_processed_timestamp.txt"
 FINANCIALJUICE_RSS_FEED_URL = "https://www.financialjuice.com/feed.ashx?xy=rss"
 
-# Define your interest keywords here (case-insensitive search will be applied)
-# Note: You currently have a line in your code that effectively removes this filter:
-# "keyword_filtered_articles = fresh_articles"
-# If you want to re-enable keyword filtering, you'll need to adjust that line.
-INTEREST_KEYWORDS = [
-    "usd", "eur", "jpy", "gbp", "cad", "aud", "nzd", "chf", # G8 Currencies
-    "economic data", "inflation", "gdp", "unemployment", "interest rates", # Economic Data
-    "central bank", "fed", "ecb", "boj", "boe", "rba", "rbnz", "snb", "boc", # Central Banks
-    "btc", "eth", "bitcoin", "ethereum", "crypto", "cryptocurrency", # BTC & ETH News
-    "gold", "xau", # Gold News
-    "federal reserve", "secretary of finance", "treasury secretary", # Financial Political
-    "china us trade", "tariff", "trade war", "sanctions", "trade talks", "trade deal", # China-US Trade/Tariffs
-    "markets", "stocks", "bonds", "commodities", "forex" # General market terms to catch broader news
+# --- Keyword Definitions for Smarter Filtering (Important for Forex Traders) ---
+# High-priority keywords: If any of these are found, the news is almost certainly relevant.
+HIGH_PRIORITY_KEYWORDS = [
+    # Central Banks & Officials
+    "fed", "ecb", "boj", "boe", "rba", "rbnz", "snb", "boc", # Common central bank acronyms
+    "federal reserve", "european central bank", "bank of japan", "bank of england",
+    "reserve bank of australia", "reserve bank of new zealand", "swiss national bank", "bank of canada",
+    "powell", "lagarde", "bailey", "ueda", "christine lagarde", "jerome powell", # Key Central Bankers
+    "yellen", "treasury secretary", "finance minister", "chancellor of the exchequer", # Key Finance/Treasury Officials
+    "central bank", "monetary policy", "policy meeting", "interest rate decision", "rate hike", "rate cut", # Core Policy Terms
+
+    # Economic Data & Events
+    "inflation", "gdp", "unemployment", "cpi", "ppi", "pmi", "nfp", "non-farm payrolls", "jobs report", # Key Economic Data
+    "retail sales", "industrial production", "trade balance", "consumer confidence", # More Economic Data
+    "economic data", "data release", "report", "forecast", # General data terms
+    "speech", "testimony", "press conference", "briefing", # Communication types
+    "summit", "g7", "g20", "davos", "imf", "world bank", # Major Global Meetings/Institutions
+
+    # Geopolitical & Market Movers
+    "trump", "biden", "election", "geopolitical", "trade war", "tariff", "sanctions", "brexit", # Political/Geopolitical
+    "recession", "crisis", "default", "stimulus", "quantitative easing", "qe", "quantitative tightening", "qt", # Major Economic Shifts
+    "market", "forex", "fx", "currency", "bond", "stock", "equity", "commodity", "oil", "gold", # Market terms
+    "headline" # To capture anything explicitly tagged as 'headline' in content, though usually redundant.
+]
+
+# General interest keywords: Broader terms. News needs at least one of these (and not necessarily a high-priority one).
+GENERAL_INTEREST_KEYWORDS = [
+    "usd", "eur", "jpy", "gbp", "cad", "aud", "nzd", "chf", # Major Currencies
+    "btc", "eth", "bitcoin", "ethereum", "crypto", "cryptocurrency", # Crypto
+    "xau", "silver", # Precious Metals
+    "trading", "investing", "analyst", # Trading/Investment terms
+    "company news", "corporate earnings", "dividend" # Company specific financial news
 ]
 
 EAST_AFRICA_TIMEZONE = pytz.timezone('Africa/Nairobi')
@@ -165,8 +184,37 @@ async def main_loop():
                     entry.unix_timestamp = article_timestamp
                     fresh_articles.append(entry)
             
-            keyword_filtered_articles = fresh_articles
-            keyword_filtered_articles.sort(key=lambda x: x.unix_timestamp)
+            # 2. Smarter Filtering based on High-Priority and General Interest Keywords
+            smarter_filtered_articles = []
+            for article_entry in fresh_articles:
+                headline = article_entry.get('title', 'No Headline')
+                summary = article_entry.get('summary', '') if hasattr(article_entry, 'summary') else ''
+
+                # Combine headline and summary for comprehensive checking
+                text_to_check = f"{headline.lower()} {summary.lower()}"
+
+                is_high_priority = False
+                for keyword in HIGH_PRIORITY_KEYWORDS:
+                    if keyword.lower() in text_to_check:
+                        is_high_priority = True
+                        break # Found a high-priority keyword, no need to check others
+
+                is_general_interest = False
+                if not is_high_priority: # Only check general interest if not already high priority
+                    for keyword in GENERAL_INTEREST_KEYWORDS:
+                        if keyword.lower() in text_to_check:
+                            is_general_interest = True
+                            break # Found a general interest keyword
+
+                # Article is included if it contains any high-priority keyword OR any general interest keyword
+                if is_high_priority or is_general_interest:
+                    smarter_filtered_articles.append(article_entry)
+                else:
+                    logging.info(f"News filtered out (no relevant keywords): '{headline[:80]}...'")
+
+            # Assign the smartly filtered articles for subsequent processing
+            keyword_filtered_articles = smarter_filtered_articles
+            keyword_filtered_articles.sort(key=lambda x: x.unix_timestamp) # Ensure this sort remains after filtering
 
             if keyword_filtered_articles:
                 logging.info(f"Found {len(keyword_filtered_articles)} new articles from FinancialJuice RSS.")
@@ -189,7 +237,7 @@ async def main_loop():
                     # Use the translated headline in the Telegram message
                     telegram_message = (
                         f"🔴<b>DEGDEG:</b> {somali_headline}\n\n" # Use translated headline
-                        f"Source:"
+                        f"Source: Hagarlaawe" # Fixed to include source name
                     )
 
                     await send_telegram_message(telegram_message)
