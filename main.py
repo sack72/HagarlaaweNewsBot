@@ -9,11 +9,7 @@ from telegram.error import TelegramError
 import pytz
 import feedparser
 import calendar
-
-# --- NEW IMPORTS FOR OPENAI ---
-from openai import OpenAI
-from openai import APIError # Specific error for OpenAI API issues
-# --- END NEW IMPORTS ---
+import aiohttp # Added for asynchronous HTTP requests for LibreTranslate
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,7 +17,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Configuration (from Environment Variables) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") # --- NEW: Get OpenAI API Key ---
+# LibreTranslate API Configuration
+LIBRETRANSLATE_API_URL = os.getenv("LIBRETRANSLATE_API_URL", "https://translate.argosopentech.com/translate")
+LIBRETRANSLATE_API_KEY = os.getenv("LIBRETRANSLATE_API_KEY") # Optional: if your instance requires an API key
 
 # --- Constants ---
 LAST_PROCESSED_TIMESTAMP_FILE = "last_processed_timestamp.txt"
@@ -62,15 +60,6 @@ GENERAL_INTEREST_KEYWORDS = [
 ]
 
 EAST_AFRICA_TIMEZONE = pytz.timezone('Africa/Nairobi')
-
-# --- NEW: Initialize OpenAI Client ---
-# Only initialize if the API key is present
-openai_client = None
-if OPENAI_API_KEY:
-    openai_client = OpenAI(api_key=OPENAI_API_KEY)
-else:
-    logging.error("OPENAI_API_KEY not set. Translation functionality will be disabled.")
-# --- END NEW ---
 
 # --- Functions ---
 
@@ -123,36 +112,49 @@ async def send_telegram_message(message):
     except Exception as e:
         logging.error(f"An unexpected error occurred while sending Telegram message: {e}")
 
-# --- Translation Function using OpenAI ---
-async def translate_text_openai(text_to_translate, target_language="Somali"):
+# --- Translation Function using LibreTranslate ---
+async def translate_text_libretranslate(text_to_translate, target_language="som"): # 'som' is the language code for Somali
     """
-    Translates text using the OpenAI Chat Completions API.
+    Translates text using the LibreTranslate API.
     Returns the translated text or original text on failure.
     """
-    if not openai_client:
-        logging.warning("OpenAI client not initialized (API key missing). Skipping translation.")
-        return text_to_translate # Return original if API key is missing
+    if not LIBRETRANSLATE_API_URL:
+        logging.warning("LibreTranslate API URL not set. Skipping translation.")
+        return text_to_translate # Return original if URL is missing
 
     try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini", # **CONFIRMED MODEL TO USE**
-            messages=[
-                {"role": "system", "content": f"You are a helpful assistant that translates financial news headlines accurately and concisely into {target_language}. Maintain the serious tone of news and focus on financial terminology."},
-                {"role": "user", "content": f"Translate the following English financial news headline into {target_language} and provide only the translated text, do not add anything else:\n\n'{text_to_translate}'"}
-            ],
-            temperature=0.7, # Controls randomness. Lower for more consistent results.
-            max_tokens=100 # Max tokens for the response, sufficient for headlines
-        )
-        translated_text = response.choices[0].message.content.strip()
-        logging.info(f"Translated '{text_to_translate}' to '{translated_text}'")
-        return translated_text
-    except APIError as e:
-        logging.error(f"OpenAI API error during translation: {e}")
-        return text_to_translate # Return original on API error
+        headers = {'Content-Type': 'application/json'}
+        payload = {
+            "q": text_to_translate,
+            "source": "en", # Source language is English
+            "target": target_language, # Target language is Somali ('som')
+            "format": "text"
+        }
+        if LIBRETRANSLATE_API_KEY:
+            payload["api_key"] = LIBRETRANSLATE_API_KEY
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(LIBRETRANSLATE_API_URL, headers=headers, json=payload) as response:
+                response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+                data = await response.json()
+
+                if 'translatedText' in data:
+                    translated_text = data['translatedText'].strip()
+                    logging.info(f"Translated '{text_to_translate}' to '{translated_text}' using LibreTranslate.")
+                    return translated_text
+                else:
+                    logging.error(f"LibreTranslate response missing 'translatedText': {data}")
+                    return text_to_translate
+    except aiohttp.ClientError as e:
+        logging.error(f"LibreTranslate API request error: {e}")
+        return text_to_translate
+    except json.JSONDecodeError as e:
+        logging.error(f"Error decoding LibreTranslate response JSON: {e}")
+        return text_to_translate
     except Exception as e:
-        logging.error(f"An unexpected error occurred during OpenAI translation: {e}")
-        return text_to_translate # Return original on other errors
-# --- END NEW ---
+        logging.error(f"An unexpected error occurred during LibreTranslate translation: {e}")
+        return text_to_translate
+# --- END LibreTranslate Translation ---
 
 async def main_loop():
     """Main loop to fetch and send news."""
@@ -229,10 +231,10 @@ async def main_loop():
                     
                     logging.info(f"Processing news: English Headline: {english_headline}")
 
-                    # --- Call OpenAI for translation ---
-                    somali_headline = await translate_text_openai(english_headline, target_language="Somali")
+                    # --- Call LibreTranslate for translation ---
+                    somali_headline = await translate_text_libretranslate(english_headline, target_language="som")
                     # If translation fails, somali_headline will be the original English headline
-                    # --- END NEW ---
+                    # --- END LibreTranslate ---
 
                     # Use the translated headline in the Telegram message
                     telegram_message = (
@@ -257,7 +259,7 @@ async def main_loop():
         time.sleep(60)
 
 if __name__ == "__main__":
-    required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID", "OPENAI_API_KEY"]
+    required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID", "LIBRETRANSLATE_API_URL"] # Added LibreTranslate URL
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
@@ -267,4 +269,3 @@ if __name__ == "__main__":
 
     import asyncio
     asyncio.run(main_loop())
-
