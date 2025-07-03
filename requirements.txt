@@ -1,6 +1,5 @@
 python-telegram-bot==21.3
 requests==2.32.3
-# google-generativeai==0.7.0 # Temporarily commented out to ensure no conflicts
 pytz==2024.1
 feedparser==6.0.10
-openai>=1.0.0 # **CRITICAL CHANGE: Ensure you get a v1.x.x version or newer**
+aiohttp==3.9.5  # Added for asynchronous HTTP requests for LibreTranslate
