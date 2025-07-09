@@ -3,19 +3,22 @@ from telegram import Bot
 from googletrans import Translator # Ensure googletrans is installed via requirements.txt
 import time
 import os
-import pytz # Import pytz for timezone awareness if needed (from your requirements)
-import requests # From your requirements, though not directly used in this feedparser/googletrans flow
+import pytz # From your requirements.txt - included for completeness, though not directly used in core logic here
+import requests # From your requirements.txt - included for completeness, though not directly used in core logic here
 
 # --- Configuration ---
-# It's best practice to get sensitive information from environment variables
+# IMPORTANT: Replace these placeholders with your actual values!
+# For production, it is HIGHLY recommended to set these as Environment Variables on Render.com
+# Example: TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@HagarlaaweMarkets") # Your channel username (e.g., @MyBotChannel)
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@HagarlaaweMarkets") # Your Telegram channel username (e.g., @MyBotChannel)
 FINANCIAL_JUICE_RSS_FEED_URL = os.getenv("FINANCIAL_JUICE_RSS_FEED_URL", "YOUR_FINANCIAL_JUICE_RSS_FEED_URL") 
 
 # --- Global Variables ---
 translator = Translator()
-# A simple in-memory store for last posted item.
-# For persistence across bot restarts, consider a file or a simple database.
+# A simple in-memory store for the last posted item's link.
+# This will reset if the bot restarts. For persistence across restarts,
+# you would need to save this to a file or a database.
 last_posted_link = None 
 
 # --- Functions ---
@@ -27,13 +30,10 @@ def fetch_and_post_headlines():
     """
     global last_posted_link # Declare global to modify the variable
 
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Checking RSS feed from: {FINANCIAL_JUICE_RSS_FEED_URL}")
+    current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()) # Local time in Kenya
+    print(f"[{current_time_str}] Checking RSS feed from: {FINANCIAL_JUICE_RSS_FEED_URL}")
     feed = feedparser.parse(FINANCIAL_JUICE_RSS_FEED_URL)
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-    # To avoid re-posting after restarts, you'd typically load `last_posted_link`
-    # from a file or environment variable at bot startup.
-    # For this example, it only prevents duplicates within a single continuous run.
 
     new_entries_to_process = []
     
@@ -66,7 +66,6 @@ def fetch_and_post_headlines():
             somali_headline = translated_text_obj.text
             
             # --- Message Format ---
-            # You can choose to send only Somali or both.
             # This example sends both, formatted nicely with Markdown.
             message_to_send = (
                 f"**HAGARLAAWE MARKETS NEWS**\n\n"
@@ -114,17 +113,13 @@ if __name__ == "__main__":
     print("Bot starting...")
     
     # You might want to initialize last_posted_link from a persistent store here
-    # For example:
-    # try:
-    #     with open('last_link.txt', 'r') as f:
-    #         last_posted_link = f.read().strip()
-    #         print(f"Loaded last posted link: {last_posted_link}")
-    # except FileNotFoundError:
-    #     print("No last_link.txt found. Starting fresh.")
+    # (e.g., a simple text file that Render could write to, or an environment variable).
+    # For now, it prevents duplicates only within a single continuous run.
     
-    # This loop will keep your bot running on Render.com
+    # This loop will keep your bot running indefinitely on Render.com
     while True:
         fetch_and_post_headlines()
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Sleeping for 15 minutes...")
+        current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()) # Local time in Kenya
+        print(f"[{current_time_str}] Sleeping for 15 minutes...")
         time.sleep(15 * 60) # Check every 15 minutes (adjust based on feed update frequency and desired latency)
 
