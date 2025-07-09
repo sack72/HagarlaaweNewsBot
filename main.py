@@ -1,287 +1,130 @@
-import os
-import requests
-import json
-import time
-from datetime import datetime
-import logging
-from telegram import Bot
-from telegram.error import TelegramError
-import pytz
 import feedparser
-import calendar
-import aiohttp # Added for asynchronous HTTP requests for LibreTranslate
+from telegram import Bot
+from googletrans import Translator # Ensure googletrans is installed via requirements.txt
+import time
+import os
+import pytz # Import pytz for timezone awareness if needed (from your requirements)
+import requests # From your requirements, though not directly used in this feedparser/googletrans flow
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --- Configuration ---
+# It's best practice to get sensitive information from environment variables
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@HagarlaaweMarkets") # Your channel username (e.g., @MyBotChannel)
+FINANCIAL_JUICE_RSS_FEED_URL = os.getenv("FINANCIAL_JUICE_RSS_FEED_URL", "YOUR_FINANCIAL_JUICE_RSS_FEED_URL") 
 
-# --- Configuration (from Environment Variables) ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-# LibreTranslate API Configuration
-LIBRETRANSLATE_API_URL = os.getenv("LIBRETRANSLATE_API_URL", "https://translate.argosopentech.com/translate")
-LIBRETRANSLATE_API_KEY = os.getenv("LIBRETRANSLATE_API_KEY") # Optional: if your instance requires an API key
-
-# --- Constants ---
-LAST_PROCESSED_TIMESTAMP_FILE = "last_processed_timestamp.txt"
-FINANCIALJUICE_RSS_FEED_URL = "https://www.financialjuice.com/feed.ashx?xy=rss"
-
-# --- Keyword Definitions for Smarter Filtering (Important for Forex Traders) ---
-# High-priority keywords: If any of these are found, the news is almost certainly relevant.
-HIGH_PRIORITY_KEYWORDS = [
-    # Central Banks & Officials
-    "fed", "ecb", "boj", "boe", "rba", "rbnz", "snb", "boc", # Common central bank acronyms
-    "federal reserve", "european central bank", "bank of japan", "bank of england",
-    "reserve bank of australia", "reserve bank of new zealand", "swiss national bank", "bank of canada",
-    "powell", "lagarde", "bailey", "ueda", "christine lagarde", "jerome powell", # Key Central Bankers
-    "yellen", "treasury secretary", "finance minister", "chancellor of the exchequer", # Key Finance/Treasury Officials
-    "central bank", "monetary policy", "policy meeting", "interest rate decision", "rate hike", "rate cut", # Core Policy Terms
-
-    # Economic Data & Events
-    "inflation", "gdp", "unemployment", "cpi", "ppi", "pmi", "nfp", "non-farm payrolls", "jobs report", # Key Economic Data
-    "retail sales", "industrial production", "trade balance", "consumer confidence", # More Economic Data
-    "economic data", "data release", "report", "forecast", # General data terms
-    "speech", "testimony", "press conference", "briefing", # Communication types
-    "summit", "g7", "g20", "davos", "imf", "world bank", # Major Global Meetings/Institutions
-
-    # Geopolitical & Market Movers
-    "trump", "biden", "election", "geopolitical", "trade war", "tariff", "sanctions", "brexit", # Political/Geopolitical
-    "recession", "crisis", "default", "stimulus", "quantitative easing", "qe", "quantitative tightening", "qt", # Major Economic Shifts
-    "market", "forex", "fx", "currency", "bond", "stock", "equity", "commodity", "oil", "gold", # Market terms
-    "headline" # To capture anything explicitly tagged as 'headline' in content, though usually redundant.
-]
-
-# General interest keywords: Broader terms. News needs at least one of these (and not necessarily a high-priority one).
-GENERAL_INTEREST_KEYWORDS = [
-    "usd", "eur", "jpy", "gbp", "cad", "aud", "nzd", "chf", # Major Currencies
-    "btc", "eth", "bitcoin", "ethereum", "crypto", "cryptocurrency", # Crypto
-    "xau", "silver", # Precious Metals
-    "trading", "investing", "analyst", # Trading/Investment terms
-    "company news", "corporate earnings", "dividend" # Company specific financial news
-]
-
-EAST_AFRICA_TIMEZONE = pytz.timezone('Africa/Nairobi')
+# --- Global Variables ---
+translator = Translator()
+# A simple in-memory store for last posted item.
+# For persistence across bot restarts, consider a file or a simple database.
+last_posted_link = None 
 
 # --- Functions ---
 
-def get_last_processed_timestamp():
-    """Retrieves the last processed news timestamp (Unix epoch) from a file or environment variable."""
-    if os.path.exists(LAST_PROCESSED_TIMESTAMP_FILE):
-        with open(LAST_PROCESSED_TIMESTAMP_FILE, "r") as f:
-            try:
-                return int(f.read().strip())
-            except ValueError:
-                return 0 # Default to 0 if file is corrupted or empty
-    elif os.getenv("LAST_PROCESSED_TIMESTAMP"):
-        try:
-            return int(os.getenv("LAST_PROCESSED_TIMESTAMP"))
-        except ValueError:
-                return 0 # Default to 0 if env var is not a valid number
-    return 0 # Default to 0 (epoch start) if no previous record
+def fetch_and_post_headlines():
+    """
+    Fetches new headlines from the RSS feed, translates them to Somali,
+    and posts them to the Telegram channel.
+    """
+    global last_posted_link # Declare global to modify the variable
 
-def save_last_processed_timestamp(timestamp):
-    """Saves the last processed news timestamp (Unix epoch) to a file."""
-    with open(LAST_PROCESSED_TIMESTAMP_FILE, "w") as f:
-        f.write(str(timestamp))
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Checking RSS feed from: {FINANCIAL_JUICE_RSS_FEED_URL}")
+    feed = feedparser.parse(FINANCIAL_JUICE_RSS_FEED_URL)
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-def fetch_latest_news_from_rss():
-    """Fetches the latest news from the FinancialJuice RSS feed."""
-    logging.info(f"Fetching latest news from RSS feed: {FINANCIALJUICE_RSS_FEED_URL}...")
-    try:
-        feed = feedparser.parse(FINANCIALJUICE_RSS_FEED_URL)
-        if feed.bozo: # Check for parse errors (bozo = True indicates issues)
-            logging.error(f"Error parsing RSS feed: {feed.bozo_exception}")
-            return None
-        
-        return feed.entries # Returns a list of news entries
-    except Exception as e:
-        logging.error(f"Error fetching or parsing RSS feed: {e}")
-        return None
+    # To avoid re-posting after restarts, you'd typically load `last_posted_link`
+    # from a file or environment variable at bot startup.
+    # For this example, it only prevents duplicates within a single continuous run.
 
-async def send_telegram_message(message):
-    """Sends a message to the Telegram channel."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
-        logging.error("Telegram Bot Token or Channel ID not set. Cannot send message.")
+    new_entries_to_process = []
+    
+    # Iterate through entries from newest to oldest to find truly new ones efficiently
+    # and then process them in chronological order.
+    # If `last_posted_link` is None (first run or restart), it will process all.
+    for entry in feed.entries:
+        if entry.link == last_posted_link:
+            # We've reached the last headline we already posted, stop here
+            break
+        new_entries_to_process.append(entry)
+    
+    # Reverse to process from oldest new headline to newest new headline
+    new_entries_to_process.reverse() 
+
+    if not new_entries_to_process:
+        print("No new headlines to post.")
         return
 
-    try:
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=message, parse_mode='HTML', disable_web_page_preview=True)
-        logging.info("Message sent to Telegram.")
-    except TelegramError as e:
-        logging.error(f"Error sending message to Telegram: {e}")
-    except Exception as e:
-        logging.error(f"An unexpected error occurred while sending Telegram message: {e}")
+    print(f"Found {len(new_entries_to_process)} new headlines.")
 
-# --- Translation Function using LibreTranslate ---
-async def translate_text_libretranslate(text_to_translate, target_language="som"): # 'som' is the language code for Somali
-    """
-    Translates text using the LibreTranslate API.
-    Returns the translated text or original text on failure.
-    """
-    if not LIBRETRANSLATE_API_URL:
-        logging.warning("LibreTranslate API URL not set. Skipping translation.")
-        return text_to_translate # Return original if URL is missing
-
-    # Ensure text_to_translate is not empty or none
-    if not text_to_translate or not text_to_translate.strip():
-        logging.warning("No text provided for translation. Skipping LibreTranslate call.")
-        return text_to_translate
-
-    try:
-        headers = {'Content-Type': 'application/json'}
-        payload = {
-            "q": text_to_translate,
-            "source": "en", # Source language is English
-            "target": target_language, # Target language is Somali ('som')
-            "format": "text"
-        }
-        if LIBRETRANSLATE_API_KEY:
-            payload["api_key"] = LIBRETRANSLATE_API_KEY
-
-        logging.info(f"Attempting LibreTranslate for: '{text_to_translate[:50]}...' with payload: {payload}") # New debug log
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(LIBRETRANSLATE_API_URL, headers=headers, json=payload) as response:
-                # Log the response status before raising for status
-                logging.info(f"LibreTranslate response status: {response.status}") # New debug log
-                
-                # If the status is 400 or higher, get the error message from the response body
-                if response.status >= 400:
-                    error_data = await response.json()
-                    logging.error(f"LibreTranslate API returned error {response.status}: {error_data}") # New debug log
-                    # No need to raise_for_status if we handle it here and return original text
-                    return text_to_translate # Return original on API error
-
-                data = await response.json()
-
-                if 'translatedText' in data:
-                    translated_text = data['translatedText'].strip()
-                    logging.info(f"Translated '{text_to_translate}' to '{translated_text}' using LibreTranslate.")
-                    return translated_text
-                else:
-                    logging.error(f"LibreTranslate response missing 'translatedText': {data}")
-                    return text_to_translate
-    except aiohttp.ClientError as e:
-        logging.error(f"LibreTranslate API request error (aiohttp): {e}")
-        return text_to_translate
-    except json.JSONDecodeError as e:
-        logging.error(f"Error decoding LibreTranslate response JSON: {e}")
-        return text_to_translate
-    except Exception as e:
-        logging.error(f"An unexpected error occurred during LibreTranslate translation: {e}")
-        return text_to_translate
-# --- END LibreTranslate Translation ---
-
-async def main_loop():
-    """Main loop to fetch and send news."""
-    logging.info("Bot started. Entering main loop...")
-    
-    # Send a startup message to Telegram for debugging purposes
-    try:
-        bot_telegram_startup = Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot_telegram_startup.send_message(chat_id=TELEGRAM_CHANNEL_ID, text="Bot has started and is checking for new financial news from FinancialJuice RSS. Posts will be filtered by topics and timestamps are in EAT. Now with Somali translation.", parse_mode='HTML') # Updated startup message
-        logging.info("Startup message sent to Telegram.")
-    except TelegramError as e:
-        logging.warning(f"Could not send startup message to Telegram (this might be fine if channel is not ready or ID is not fully correct): {e}")
-
-    while True:
-        last_timestamp = get_last_processed_timestamp()
+    for entry in new_entries_to_process:
+        english_headline = entry.title
+        post_url = entry.link
         
-        news_entries = fetch_latest_news_from_rss()
-
-        if news_entries and isinstance(news_entries, list):
-            fresh_articles = []
-            for entry in news_entries:
-                if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                    article_timestamp = calendar.timegm(entry.published_parsed)
-                else:
-                    article_timestamp = int(time.time())
-                    logging.warning(f"RSS entry '{entry.title if hasattr(entry, 'title') else 'No title'}' missing published date. Using current time.")
-
-                if article_timestamp > last_timestamp:
-                    entry.unix_timestamp = article_timestamp
-                    fresh_articles.append(entry)
+        try:
+            # Adding a small delay for googletrans calls to avoid hitting rate limits
+            time.sleep(0.5) 
+            translated_text_obj = translator.translate(english_headline, dest='so')
+            somali_headline = translated_text_obj.text
             
-            # 2. Smarter Filtering based on High-Priority and General Interest Keywords
-            smarter_filtered_articles = []
-            for article_entry in fresh_articles:
-                headline = article_entry.get('title', 'No Headline')
-                summary = article_entry.get('summary', '') if hasattr(article_entry, 'summary') else ''
+            # --- Message Format ---
+            # You can choose to send only Somali or both.
+            # This example sends both, formatted nicely with Markdown.
+            message_to_send = (
+                f"**HAGARLAAWE MARKETS NEWS**\n\n"
+                f"🇬🇧: {english_headline}\n\n"
+                f"🇸🇴: {somali_headline}\n\n"
+                f"[Read More]({post_url})" 
+            )
+            
+            bot.send_message(
+                chat_id=TELEGRAM_CHANNEL_ID,
+                text=message_to_send,
+                parse_mode='Markdown', # Allows for bolding and clickable links
+                disable_web_page_preview=True # Prevents Telegram from auto-generating link previews
+            )
+            print(f"Posted: '{english_headline}' -> '{somali_headline}'")
+            
+            # Update the last posted link after successful posting
+            last_posted_link = entry.link 
+            
+            # Add a small delay between Telegram messages to avoid API rate limits
+            time.sleep(1) 
 
-                # Combine headline and summary for comprehensive checking
-                text_to_check = f"{headline.lower()} {summary.lower()}"
+        except Exception as e:
+            print(f"Error translating or posting headline '{english_headline}': {e}")
+            # Fallback: if translation fails, post the original English headline
+            try:
+                fallback_message = (
+                    f"**HAGARLAAWE MARKETS NEWS (Translation Failed)**\n\n"
+                    f"Original English:\n{english_headline}\n\n"
+                    f"[Read More]({post_url})"
+                )
+                bot.send_message(
+                    chat_id=TELEGRAM_CHANNEL_ID,
+                    text=fallback_message,
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+                print(f"Posted original English due to translation error: '{english_headline}'")
+            except Exception as inner_e:
+                print(f"Failed to post even original English headline '{english_headline}': {inner_e}")
 
-                is_high_priority = False
-                for keyword in HIGH_PRIORITY_KEYWORDS:
-                    if keyword.lower() in text_to_check:
-                        is_high_priority = True
-                        break # Found a high-priority keyword, no need to check others
 
-                is_general_interest = False
-                if not is_high_priority: # Only check general interest if not already high priority
-                    for keyword in GENERAL_INTEREST_KEYWORDS:
-                        if keyword.lower() in text_to_check:
-                            is_general_interest = True
-                            break # Found a general interest keyword
-
-                # Article is included if it contains any high-priority keyword OR any general interest keyword
-                if is_high_priority or is_general_interest:
-                    smarter_filtered_articles.append(article_entry)
-                else:
-                    logging.info(f"News filtered out (no relevant keywords): '{headline[:80]}...'")
-
-            # Assign the smartly filtered articles for subsequent processing
-            keyword_filtered_articles = smarter_filtered_articles
-            keyword_filtered_articles.sort(key=lambda x: x.unix_timestamp) # Ensure this sort remains after filtering
-
-            if keyword_filtered_articles:
-                logging.info(f"Found {len(keyword_filtered_articles)} new articles from FinancialJuice RSS.")
-                new_latest_timestamp = last_timestamp
-
-                for article_entry in keyword_filtered_articles:
-                    article_timestamp = article_entry.unix_timestamp
-                    english_headline = article_entry.get('title', 'No Headline')
-                    
-                    if english_headline.lower().startswith("financialjuice:"):
-                        english_headline = english_headline[len("financialjuice:"):].strip()
-                    
-                    logging.info(f"Processing news: English Headline: {english_headline}")
-
-                    # --- Call LibreTranslate for translation ---
-                    somali_headline = await translate_text_libretranslate(english_headline, target_language="som")
-                    # If translation fails, somali_headline will be the original English headline
-                    # --- END LibreTranslate ---
-
-                    # Use the translated headline in the Telegram message
-                    telegram_message = (
-                        f"🔴<b>DEGDEG:</b> {somali_headline}\n\n" # Use translated headline
-                        f"Source: Hagarlaawe" # Fixed to include source name
-                    )
-
-                    await send_telegram_message(telegram_message)
-                    new_latest_timestamp = max(new_latest_timestamp, article_timestamp) 
-
-                if new_latest_timestamp > last_timestamp:
-                    save_last_processed_timestamp(new_latest_timestamp)
-                    logging.info(f"Updated last processed news timestamp to: {new_latest_timestamp}")
-            else:
-                logging.info("No new articles found since last check.")
-        elif news_entries is not None:
-            logging.warning("RSS feed returned no entries or unexpected data format.")
-        else:
-            logging.error("Failed to fetch news from RSS feed (data is None).")
-
-        logging.info("Sleeping for 60 seconds for next check...")
-        time.sleep(60)
-
+# --- Main Execution Loop ---
 if __name__ == "__main__":
-    required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID", "LIBRETRANSLATE_API_URL"] # Added LibreTranslate URL
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    print("Bot starting...")
     
-    if missing_vars:
-        logging.error(f"Missing required environment variables: {', '.join(missing_vars)}")
-        logging.error("Please set them in Render's environment settings.")
-        exit(1)
+    # You might want to initialize last_posted_link from a persistent store here
+    # For example:
+    # try:
+    #     with open('last_link.txt', 'r') as f:
+    #         last_posted_link = f.read().strip()
+    #         print(f"Loaded last posted link: {last_posted_link}")
+    # except FileNotFoundError:
+    #     print("No last_link.txt found. Starting fresh.")
+    
+    # This loop will keep your bot running on Render.com
+    while True:
+        fetch_and_post_headlines()
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Sleeping for 15 minutes...")
+        time.sleep(15 * 60) # Check every 15 minutes (adjust based on feed update frequency and desired latency)
 
-    import asyncio
-    asyncio.run(main_loop())
