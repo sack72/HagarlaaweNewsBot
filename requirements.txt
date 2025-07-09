@@ -2,4 +2,5 @@ python-telegram-bot==21.3
 requests==2.32.3
 pytz==2024.1
 feedparser==6.0.10
-aiohttp==3.9.5  # Added for asynchronous HTTP requests for LibreTranslate
+googletrans==4.0.2  # Using the latest stable version found on PyPI
+# aiohttp==3.9.5
