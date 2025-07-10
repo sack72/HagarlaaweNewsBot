@@ -121,5 +121,6 @@ if __name__ == "__main__":
         fetch_and_post_headlines()
         current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()) # Local time in Kenya
         print(f"[{current_time_str}] Sleeping for 15 minutes...")
-        time.sleep(15 * 60) # Check every 15 minutes (adjust based on feed update frequency and desired latency)
+        time.sleep(60) # Check every 1 minute
+
 
