@@ -17,8 +17,6 @@ translator = Translator()
 last_posted_link = None 
 
 # --- Keyword Filtering ---
-# Keywords for major macroeconomic data, major banks, and major currencies
-# These will be checked in a case-insensitive manner.
 KEYWORDS = [
     # Macroeconomics Data
     "cpi", "inflation", "gdp", "jobs report", "non-farm payrolls", "nfp", 
@@ -78,48 +76,50 @@ async def fetch_and_post_headlines():
     filtered_headlines_count = 0
     for entry in new_entries_to_process:
         english_headline = entry.title
-        post_url = entry.link # Keep URL for logging/debugging if needed
+        post_url = entry.link 
 
         # --- Keyword Filtering Logic ---
         if not contains_keywords(english_headline, KEYWORDS):
             print(f"Skipping (no keywords): '{english_headline}'")
-            continue # Skip this headline if no keywords are found
+            continue 
         
         print(f"Processing (contains keywords): '{english_headline}'")
         filtered_headlines_count += 1
 
         try:
-            await asyncio.sleep(0.5) # Delay for Google Translate calls
+            await asyncio.sleep(0.5) 
             
             translated_text_obj = await translator.translate(english_headline, dest='so') 
             somali_headline = translated_text_obj.text
             
-            # --- Updated Message Format ---
-            # Posts only the Somali version, with "DEGDEG" header, no FinancialJuice prefix, no "Read More"
+            # --- Main Message Format ---
             message_to_send = (
                 f"**DEGDEG**\n\n"
-                f"🇸🇴: {somali_headline}" 
+                f"{somali_headline}" 
             )
             
             await bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
                 text=message_to_send,
-                parse_mode='Markdown', # Allows for bolding
+                parse_mode='Markdown', 
                 disable_web_page_preview=True 
             )
             print(f"Posted Somali: '{somali_headline}' (Original: '{english_headline}')")
             
             last_posted_link = entry.link 
             
-            await asyncio.sleep(1) # Delay between Telegram messages
+            await asyncio.sleep(1) 
 
         except Exception as e:
             print(f"Error translating or posting headline '{english_headline}': {e}")
-            # Fallback: if translation fails, post the original English version with an error note
             try:
+                # --- UPDATED Fallback Message ---
+                # Remove "FinancialJuice:" prefix for cleaner display in fallback
+                cleaned_english_headline = english_headline.replace("FinancialJuice:", "").strip()
+
                 fallback_message = (
-                    f"**DEGDEG (Translation Failed)**\n\n"
-                    f"🇬🇧: {english_headline}"
+                    f"**DEGDEG**\n\n" # Removed "(Translation Failed)"
+                    f"🇬🇧: {cleaned_english_headline}" # Using cleaned headline
                 )
                 await bot.send_message(
                     chat_id=TELEGRAM_CHANNEL_ID,
@@ -144,5 +144,4 @@ if __name__ == "__main__":
         
         current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()) 
         print(f"[{current_time_str}] Sleeping for 1 minute...")
-        time.sleep(60) # Changed to 1 minute as requested
-
+        time.sleep(60) 
