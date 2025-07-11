@@ -36,6 +36,19 @@ KEYWORDS = [
     "euro", "dollar", "currency", "forex", "fx", "greenback",
 ]
 
+# --- NEW: List of Somali prefixes to remove from translation ---
+SOMALI_PREFIXES_TO_REMOVE = [
+    "Qeybta Abaalmarinta:",
+    "Qeyb-qabad:",
+    "Qeyb-dhaqameedka",
+    "Qeyb-dhaqaale:",
+    "Fieldinice:",
+    "Fieldjuice:",
+    "Dhaqaale:",
+    "Abuurjuice:",
+    # Add any other new prefixes you might find here
+]
+
 def contains_keywords(text, keywords):
     """Checks if the text contains any of the specified keywords (case-insensitive)."""
     text_lower = text.lower()
@@ -92,14 +105,21 @@ async def fetch_and_post_headlines():
             translated_text_obj = await translator.translate(english_headline, dest='so') 
             somali_headline = translated_text_obj.text
             
-            # --- UPDATED Main Message Format ---
-            # Includes both English and Somali with flags, and "DEGDEG 🔴"
+            # --- NEW: Clean ALL known Somali prefixes from translation ---
+            for prefix in SOMALI_PREFIXES_TO_REMOVE:
+                if somali_headline.startswith(prefix):
+                    somali_headline = somali_headline[len(prefix):].strip()
+            somali_headline = somali_headline.strip() # Final strip for any remaining whitespace
+
+
+            # --- Main Message Format ---
+            # Also ensure English headline is clean of FinancialJuice/Abuurjuice prefixes
             cleaned_english_headline_main = english_headline.replace("FinancialJuice:", "").replace("Abuurjuice:", "").strip()
 
             message_to_send = (
-                f"**DEGDEG 🔴**\n\n" # Added red circle emoji
-                f"🇬🇧: {cleaned_english_headline_main}\n\n" # English with flag
-                f"🇸🇴: {somali_headline}" # Somali with flag
+                f"**DEGDEG 🔴**\n\n" 
+                f"🇬🇧: {cleaned_english_headline_main}\n\n" 
+                f"🇸🇴: {somali_headline}" 
             )
             
             await bot.send_message(
@@ -117,13 +137,12 @@ async def fetch_and_post_headlines():
         except Exception as e:
             print(f"Error translating or posting headline '{english_headline}': {e}")
             try:
-                # --- Fallback Message (also adjusted) ---
-                # Remove "FinancialJuice:" and "Abuurjuice:" prefixes
+                # --- Fallback Message (also cleans prefixes from English) ---
                 cleaned_english_headline_fallback = english_headline.replace("FinancialJuice:", "").replace("Abuurjuice:", "").strip()
 
                 fallback_message = (
-                    f"**DEGDEG 🔴**\n\n" # Added red circle emoji, removed "(Translation Failed)"
-                    f"🇬🇧: {cleaned_english_headline_fallback}" # Using cleaned English headline
+                    f"**DEGDEG 🔴**\n\n" 
+                    f"🇬🇧: {cleaned_english_headline_fallback}" 
                 )
                 await bot.send_message(
                     chat_id=TELEGRAM_CHANNEL_ID,
