@@ -26,6 +26,7 @@ FETCH_WINDOW_MINUTES = int(os.getenv("FETCH_WINDOW_MINUTES", "120")) # Fetch eve
 translator = Translator()
 # Using a timestamp to track the last posted event, as Twelve Data events don't have unique 'links'
 # Initialize to a very old timestamp to ensure first run fetches recent events
+# This will be updated to a persistent storage solution if needed in the future for production bots
 last_posted_event_timestamp = datetime.now(timezone.utc).timestamp() - (FETCH_WINDOW_MINUTES * 60 * 2) # Go back a bit more than window
 
 # --- Keyword Filtering ---
@@ -79,18 +80,23 @@ async def fetch_and_post_headlines():
 
     current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
     print(f"[{current_time_str}] Checking Twelve Data Economic Calendar API...")
-    
+
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    filtered_headlines_count = 0 # FIXED: Ensure this is always initialized
 
     # Calculate time range for events
-    end_time = datetime.now(timezone.utc)
-    start_time = end_time - pytz.utc.localize(datetime.fromtimestamp(FETCH_WINDOW_MINUTES * 60)) # Using pytz.utc.localize for consistent timezone-aware datetime
+    # The 'interval' parameter in Twelve Data API typically means the frequency of data points,
+    # not the time range to look back for events. For economic_calendar, the API likely
+    # returns recent or upcoming events by default, or allows date range parameters.
+    # We are setting up a local filter based on last_posted_event_timestamp.
+    # No explicit start_time/end_time parameters are needed for basic economic_calendar call.
 
     params = {
         "apikey": TWELVE_DATA_API_KEY,
         "symbol": TWELVE_DATA_COUNTRIES, # Use 'symbol' for countries in economic_calendar
-        "interval": "1day", # Fetch events within the specified time window, not fixed interval
         "outputsize": 100 # Max number of events to fetch, adjust if needed
+        # Twelve Data economic_calendar usually fetches recent/upcoming events by default.
+        # Check their docs for 'start_date' and 'end_date' if you need very specific historical lookbacks.
     }
 
     try:
@@ -99,31 +105,39 @@ async def fetch_and_post_headlines():
         data = response.json()
 
         if "code" in data and data["code"] != 200:
-            print(f"Twelve Data API Error: {data.get('message', 'Unknown error')}")
-            return
-        
+            print(f"Twelve Data API Error: Code {data['code']} - {data.get('message', 'Unknown error')}")
+            return # Exit if API returns an error
+
         if not data or "data" not in data or not isinstance(data["data"], list):
             print("No valid data received from Twelve Data API or unexpected format.")
-            return
+            return # Exit if data is not as expected
 
         all_events = data["data"]
         # Sort events by timestamp to process oldest first and track latest properly
+        # This is crucial for correctly updating last_posted_event_timestamp
         all_events.sort(key=lambda x: datetime.strptime(f"{x['date']} {x['time']}", "%Y-%m-%d %H:%M").timestamp())
-        
+
         new_events_to_process = []
+        current_session_latest_timestamp = last_posted_event_timestamp # Track the latest timestamp found in THIS run
+
         for event in all_events:
             try:
-                # Combine date and time to create a datetime object for comparison
+                # Combine date and time to create a timezone-aware datetime object for comparison
                 event_datetime_str = f"{event['date']} {event['time']}"
+                # Assume Twelve Data provides time in UTC or its own standard. For consistency,
+                # we'll treat it as UTC.
                 event_datetime = datetime.strptime(event_datetime_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                 event_timestamp = event_datetime.timestamp()
 
-                # Only process events newer than the last posted event
+                # Only process events strictly newer than the last posted event from previous runs
                 if event_timestamp > last_posted_event_timestamp:
                     new_events_to_process.append(event)
+                    # Keep track of the latest timestamp among new events for updating global variable later
+                    current_session_latest_timestamp = max(current_session_latest_timestamp, event_timestamp)
+
             except ValueError as ve:
-                print(f"Skipping event due to date/time parsing error: {event_datetime_str} - {ve}")
-                continue # Skip to next event
+                print(f"Skipping event due to date/time parsing error: '{event_datetime_str}' - {ve}")
+                continue # Skip to next event in case of bad date format
 
         if not new_events_to_process:
             print("No new economic events to post.")
@@ -131,22 +145,20 @@ async def fetch_and_post_headlines():
 
         print(f"Found {len(new_events_to_process)} new economic events. Applying filters...")
 
-        filtered_headlines_count = 0
-        current_session_latest_timestamp = last_posted_event_timestamp
 
         for event in new_events_to_process:
             english_headline = f"({event.get('country', 'N/A')}) {event.get('event_name', 'No event name')}"
-            
+
             # --- Keyword Filtering Logic ---
             if not contains_keywords(english_headline, KEYWORDS):
                 print(f"Skipping (no keywords): '{english_headline}'")
                 continue
 
             print(f"Processing (contains keywords): '{english_headline}'")
-            filtered_headlines_count += 1
+            filtered_headlines_count += 1 # Increment only for events that pass keyword filter
 
             try:
-                await asyncio.sleep(0.5) # Be mindful of Twelve Data API rate limits
+                await asyncio.sleep(0.5) # Be mindful of Twelve Data API rate limits and Google Translate limits
 
                 # Translate the headline
                 translated_text_obj = await translator.translate(english_headline, dest='so')
@@ -158,19 +170,28 @@ async def fetch_and_post_headlines():
                         somali_headline = somali_headline[len(prefix):].strip()
                 somali_headline = somali_headline.strip() # Final strip
 
-                # Add event details to the message
+                # Prepare detailed message
                 event_time_utc = datetime.strptime(f"{event['date']} {event['time']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                
+
                 message_to_send = (
                     f"**DEGDEG 🔴 Wararka Dhaqaalaha**\n\n"
                     f"**Goobta:** {event.get('country', 'N/A')} - **Waqtiga (UTC):** {event_time_utc.strftime('%H:%M %b %d, %Y')}\n\n"
                     f"🇬🇧: {english_headline}\n"
-                    f"🇸🇴: {somali_headline}\n\n"
-                    f"**Saadaasha:** {event.get('forecast', 'N/A')}\n"
-                    f"**Tiirkii Hore:** {event.get('previous', 'N/A')}"
+                    f"🇸🇴: {somali_headline}"
                 )
-                if event.get('actual') is not None: # Actual data might not be available immediately
-                    message_to_send += f"\n**Xaqiiqda:** {event['actual']}"
+                
+                # Add forecast, previous, and actual if available
+                forecast = event.get('forecast')
+                previous = event.get('previous')
+                actual = event.get('actual')
+
+                if forecast is not None and forecast != "":
+                    message_to_send += f"\n\n**Saadaasha:** {forecast}"
+                if previous is not None and previous != "":
+                    message_to_send += f"\n**Tiirkii Hore:** {previous}"
+                if actual is not None and actual != "":
+                    message_to_send += f"\n**Xaqiiqda:** {actual}"
+
 
                 await bot.send_message(
                     chat_id=TELEGRAM_CHANNEL_ID,
@@ -179,9 +200,6 @@ async def fetch_and_post_headlines():
                     disable_web_page_preview=True
                 )
                 print(f"Posted Somali: '{somali_headline}' (Original: '{english_headline}')")
-
-                # Update the latest timestamp seen in this session
-                current_session_latest_timestamp = max(current_session_latest_timestamp, event_datetime.timestamp())
 
             except Exception as e:
                 print(f"Error translating or posting event '{english_headline}': {e}")
@@ -202,9 +220,9 @@ async def fetch_and_post_headlines():
                     print(f"Posted original English due to translation error: '{english_headline}'")
                 except Exception as inner_e:
                     print(f"Failed to post even original English event '{english_headline}': {inner_e}")
-        
+
         # After processing all new events, update the global last_posted_event_timestamp
-        # to prevent reprocessing them on the next run.
+        # to the latest timestamp found in this successful run.
         last_posted_event_timestamp = current_session_latest_timestamp
         print(f"Updated last_posted_event_timestamp to: {datetime.fromtimestamp(last_posted_event_timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
@@ -215,15 +233,16 @@ async def fetch_and_post_headlines():
     except Exception as e:
         print(f"An unexpected error occurred in fetch_and_post_headlines: {e}")
 
+    # This check now relies on filtered_headlines_count being defined at the function start
     if filtered_headlines_count == 0 and len(new_events_to_process) > 0:
-        print("No new economic events matched the keyword filter.")
+        print("No new economic events matched the keyword filter from the fetched data.")
 
 
 # --- Main Execution Loop ---
 if __name__ == "__main__":
     print("Bot starting...")
     print(f"Configured to fetch from Twelve Data API for countries: {TWELVE_DATA_COUNTRIES}")
-    print(f"Fetching events from the last {FETCH_WINDOW_MINUTES} minutes.")
+    print(f"Fetching events from the last {FETCH_WINDOW_MINUTES} minutes, but only processing new ones.")
 
     while True:
         # Ensure the asyncio loop is managed properly
@@ -232,4 +251,3 @@ if __name__ == "__main__":
         current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
         print(f"[{current_time_str}] Sleeping for 1 minute (adjust based on API limits and needs)...")
         time.sleep(60) # Sleep for 1 minute before checking again
-
