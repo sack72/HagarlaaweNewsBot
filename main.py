@@ -61,11 +61,20 @@ def contains_keywords(text, keywords):
     return False
 
 def remove_flag_emojis(text):
-    """Removes common flag emojis and their associated colons from the text."""
-    # This regex matches common flag emojis and the colon that often follows them.
-    # You can expand this if you notice other flags appearing.
-    # It also handles the case where the flag might be at the start of the string.
-    return re.sub(r'(\ud83c[\udde6-\ud83d\udeff]|\ud83c[\ude00-\udeff])+:?\s*', '', text, flags=re.UNICODE)
+    """
+    Removes common flag emojis (regional indicator symbol pairs)
+    and their associated colons/whitespace from the text.
+    """
+    # Pattern for Regional Indicator Symbols (U+1F1E6 to U+1F1FF)
+    # Flags are typically two of these symbols together.
+    # We use \U0001F1E6-\U0001F1FF for the 5-digit Unicode codepoints.
+    # Followed by optional colon and optional whitespace.
+    flag_pattern = r'[\U0001F1E6-\U0001F1FF]{2}:?\s*'
+    
+    # Use re.sub to remove the matched patterns.
+    # flags=re.UNICODE ensures the pattern works correctly with Unicode characters.
+    cleaned_text = re.sub(flag_pattern, '', text, flags=re.UNICODE)
+    return cleaned_text.strip() # Strip any lingering whitespace after removal
 
 
 # --- Functions ---
@@ -116,7 +125,8 @@ async def fetch_and_post_headlines():
         try:
             # Although we are not displaying Somali, we might still translate it if you have other uses.
             # If translation errors are common and you don't need the Somali, you can remove these lines entirely.
-            translated_text_obj = await translator.translate(cleaned_english_headline, dest='so') 
+            # Note: googletrans is synchronous; consider an async alternative for higher concurrency.
+            translated_text_obj = translator.translate(cleaned_english_headline, dest='so') 
             somali_headline = translated_text_obj.text
             
             # Clean Somali prefixes (still useful if you log the Somali translation, or re-enable it later)
@@ -171,9 +181,10 @@ if __name__ == "__main__":
     print("Bot starting...")
     
     while True:
+        # Note: asyncio.run() will block until fetch_and_post_headlines completes.
+        # This is fine for a simple polling loop.
         asyncio.run(fetch_and_post_headlines()) 
         
         current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()) 
         print(f"[{current_time_str}] Sleeping for 1 minute...")
         time.sleep(60)
-
