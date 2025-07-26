@@ -6,6 +6,7 @@ import os
 import pytz 
 import requests 
 import asyncio 
+import re # Import the re module for regular expressions
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
@@ -13,7 +14,9 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@HagarlaaweMarkets")
 FINANCIAL_JUICE_RSS_FEED_URL = os.getenv("FINANCIAL_JUICE_RSS_FEED_URL", "YOUR_FINANCIAL_JUICE_RSS_FEED_URL") 
 
 # --- Global Variables ---
-translator = Translator()
+# The googletrans Translator is not truly async, but it can be used with await due to its internal workings.
+# For truly robust async, consider an async translation library if performance issues arise.
+translator = Translator() 
 last_posted_link = None 
 
 # --- Keyword Filtering ---
@@ -36,7 +39,7 @@ KEYWORDS = [
     "euro", "dollar", "currency", "forex", "fx", "greenback",
 ]
 
-# --- NEW: List of Somali prefixes to remove from translation ---
+# --- List of Somali prefixes to remove from translation (kept for robustness, though translation won't be displayed) ---
 SOMALI_PREFIXES_TO_REMOVE = [
     "Qeybta Abaalmarinta:",
     "Qeyb-qabad:",
@@ -57,12 +60,20 @@ def contains_keywords(text, keywords):
             return True
     return False
 
+def remove_flag_emojis(text):
+    """Removes common flag emojis and their associated colons from the text."""
+    # This regex matches common flag emojis and the colon that often follows them.
+    # You can expand this if you notice other flags appearing.
+    # It also handles the case where the flag might be at the start of the string.
+    return re.sub(r'(\ud83c[\udde6-\ud83d\udeff]|\ud83c[\ude00-\udeff])+:?\s*', '', text, flags=re.UNICODE)
+
+
 # --- Functions ---
 
 async def fetch_and_post_headlines():
     """
     Fetches new headlines from the RSS feed, filters them by keywords,
-    translates them to Somali, and posts them to the Telegram channel.
+    and posts them to the Telegram channel (English only, no flags).
     """
     global last_posted_link 
 
@@ -88,38 +99,37 @@ async def fetch_and_post_headlines():
 
     filtered_headlines_count = 0
     for entry in new_entries_to_process:
-        english_headline = entry.title
+        english_headline_raw = entry.title # Keep raw for potential error logging
         post_url = entry.link 
 
+        # Clean the headline before keyword check (to avoid issues with prefixes interfering)
+        cleaned_english_headline = english_headline_raw.replace("FinancialJuice:", "").replace("Abuurjuice:", "").strip()
+
         # --- Keyword Filtering Logic ---
-        if not contains_keywords(english_headline, KEYWORDS):
-            print(f"Skipping (no keywords): '{english_headline}'")
+        if not contains_keywords(cleaned_english_headline, KEYWORDS):
+            print(f"Skipping (no keywords): '{cleaned_english_headline}'")
             continue 
         
-        print(f"Processing (contains keywords): '{english_headline}'")
+        print(f"Processing (contains keywords): '{cleaned_english_headline}'")
         filtered_headlines_count += 1
 
         try:
-            await asyncio.sleep(0.5) 
-            
-            translated_text_obj = await translator.translate(english_headline, dest='so') 
+            # Although we are not displaying Somali, we might still translate it if you have other uses.
+            # If translation errors are common and you don't need the Somali, you can remove these lines entirely.
+            translated_text_obj = await translator.translate(cleaned_english_headline, dest='so') 
             somali_headline = translated_text_obj.text
             
-            # --- NEW: Clean ALL known Somali prefixes from translation ---
+            # Clean Somali prefixes (still useful if you log the Somali translation, or re-enable it later)
             for prefix in SOMALI_PREFIXES_TO_REMOVE:
                 if somali_headline.startswith(prefix):
                     somali_headline = somali_headline[len(prefix):].strip()
             somali_headline = somali_headline.strip() # Final strip for any remaining whitespace
 
 
-            # --- Main Message Format ---
-            # Also ensure English headline is clean of FinancialJuice/Abuurjuice prefixes
-            cleaned_english_headline_main = english_headline.replace("FinancialJuice:", "").replace("Abuurjuice:", "").strip()
-
+            # --- Main Message Format (English only, no flags) ---
             message_to_send = (
                 f"**DEGDEG 🔴**\n\n" 
-                f"🇬🇧: {cleaned_english_headline_main}\n\n" 
-                f"🇸🇴: {somali_headline}" 
+                f"{remove_flag_emojis(cleaned_english_headline)}" 
             )
             
             await bot.send_message(
@@ -128,21 +138,19 @@ async def fetch_and_post_headlines():
                 parse_mode='Markdown', 
                 disable_web_page_preview=True 
             )
-            print(f"Posted Somali: '{somali_headline}' (Original: '{english_headline}')")
+            print(f"Posted: '{cleaned_english_headline}'") # Log only English posted
             
             last_posted_link = entry.link 
             
-            await asyncio.sleep(1) 
+            await asyncio.sleep(1) # Small delay to avoid hitting Telegram API limits
 
         except Exception as e:
-            print(f"Error translating or posting headline '{english_headline}': {e}")
+            print(f"Error processing or posting headline '{english_headline_raw}': {e}")
             try:
-                # --- Fallback Message (also cleans prefixes from English) ---
-                cleaned_english_headline_fallback = english_headline.replace("FinancialJuice:", "").replace("Abuurjuice:", "").strip()
-
+                # Fallback message (English only, no flags, even in error case)
                 fallback_message = (
                     f"**DEGDEG 🔴**\n\n" 
-                    f"🇬🇧: {cleaned_english_headline_fallback}" 
+                    f"{remove_flag_emojis(cleaned_english_headline)}" 
                 )
                 await bot.send_message(
                     chat_id=TELEGRAM_CHANNEL_ID,
@@ -150,9 +158,9 @@ async def fetch_and_post_headlines():
                     parse_mode='Markdown',
                     disable_web_page_preview=True
                 )
-                print(f"Posted original English due to translation error: '{english_headline}'")
+                print(f"Posted original English due to error: '{cleaned_english_headline}'")
             except Exception as inner_e:
-                print(f"Failed to post even original English headline '{english_headline}': {inner_e}")
+                print(f"Failed to post even original English headline '{cleaned_english_headline}': {inner_e}")
     
     if filtered_headlines_count == 0 and len(new_entries_to_process) > 0:
         print("No new headlines matched the keyword filter.")
@@ -167,4 +175,5 @@ if __name__ == "__main__":
         
         current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()) 
         print(f"[{current_time_str}] Sleeping for 1 minute...")
-        time.sleep(60) 
+        time.sleep(60)
+
