@@ -13,9 +13,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@HagarlaaweMarkets") 
 FINANCIAL_JUICE_RSS_FEED_URL = os.getenv("FINANCIAL_JUICE_RSS_FEED_URL", "YOUR_FINANCIAL_JUICE_RSS_FEED_URL") 
 
+# --- Persistent Storage Configuration ---
+# This path should point to a directory on your Render Persistent Disk.
+# A common mount point is /var/data
+PERSISTENT_STORAGE_PATH = "/var/data"
+LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
+
 # --- Global Variables ---
-# The googletrans Translator is not truly async, but it can be used with await due to its internal workings.
-# For truly robust async, consider an async translation library if performance issues arise.
 translator = Translator() 
 last_posted_link = None 
 
@@ -65,19 +69,38 @@ def remove_flag_emojis(text):
     Removes common flag emojis (regional indicator symbol pairs)
     and their associated colons/whitespace from the text.
     """
-    # Pattern for Regional Indicator Symbols (U+1F1E6 to U+1F1FF)
-    # Flags are typically two of these symbols together.
-    # We use \U0001F1E6-\U0001F1FF for the 5-digit Unicode codepoints.
-    # Followed by optional colon and optional whitespace.
     flag_pattern = r'[\U0001F1E6-\U0001F1FF]{2}:?\s*'
-    
-    # Use re.sub to remove the matched patterns.
-    # flags=re.UNICODE ensures the pattern works correctly with Unicode characters.
     cleaned_text = re.sub(flag_pattern, '', text, flags=re.UNICODE)
-    return cleaned_text.strip() # Strip any lingering whitespace after removal
+    return cleaned_text.strip()
+
+# --- New Functions for Persistence ---
+def load_last_posted_link():
+    """Loads the last posted link from the persistent file."""
+    if os.path.exists(LAST_LINK_FILE):
+        try:
+            with open(LAST_LINK_FILE, 'r') as f:
+                link = f.readline().strip()
+                print(f"Loaded last_posted_link: {link}")
+                return link if link else None
+        except Exception as e:
+            print(f"Error loading last_posted_link from file: {e}")
+            return None
+    print("No last_posted_link file found.")
+    return None
+
+def save_last_posted_link(link):
+    """Saves the last posted link to the persistent file."""
+    try:
+        # Ensure the directory exists
+        os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
+        with open(LAST_LINK_FILE, 'w') as f:
+            f.write(link)
+        print(f"Saved last_posted_link: {link}")
+    except Exception as e:
+        print(f"Error saving last_posted_link to file: {e}")
 
 
-# --- Functions ---
+# --- Main Bot Logic Functions ---
 
 async def fetch_and_post_headlines():
     """
@@ -93,11 +116,15 @@ async def fetch_and_post_headlines():
 
     new_entries_to_process = []
     
+    # Process from newest to oldest to correctly identify the "last posted"
+    # and stop early if we hit an already-posted item.
     for entry in feed.entries:
-        if entry.link == last_posted_link:
+        if last_posted_link and entry.link == last_posted_link:
+            print(f"Reached last posted link: {last_posted_link}. Stopping.")
             break
         new_entries_to_process.append(entry)
     
+    # Reverse to process oldest new entries first, maintaining chronological order
     new_entries_to_process.reverse() 
 
     if not new_entries_to_process:
@@ -108,13 +135,10 @@ async def fetch_and_post_headlines():
 
     filtered_headlines_count = 0
     for entry in new_entries_to_process:
-        english_headline_raw = entry.title # Keep raw for potential error logging
-        post_url = entry.link 
-
-        # Clean the headline before keyword check (to avoid issues with prefixes interfering)
+        english_headline_raw = entry.title 
+        
         cleaned_english_headline = english_headline_raw.replace("FinancialJuice:", "").replace("Abuurjuice:", "").strip()
 
-        # --- Keyword Filtering Logic ---
         if not contains_keywords(cleaned_english_headline, KEYWORDS):
             print(f"Skipping (no keywords): '{cleaned_english_headline}'")
             continue 
@@ -123,20 +147,15 @@ async def fetch_and_post_headlines():
         filtered_headlines_count += 1
 
         try:
-            # Although we are not displaying Somali, we might still translate it if you have other uses.
-            # If translation errors are common and you don't need the Somali, you can remove these lines entirely.
-            # Note: googletrans is synchronous; consider an async alternative for higher concurrency.
+            # Translation part (still included but not displayed)
             translated_text_obj = translator.translate(cleaned_english_headline, dest='so') 
             somali_headline = translated_text_obj.text
             
-            # Clean Somali prefixes (still useful if you log the Somali translation, or re-enable it later)
             for prefix in SOMALI_PREFIXES_TO_REMOVE:
                 if somali_headline.startswith(prefix):
                     somali_headline = somali_headline[len(prefix):].strip()
-            somali_headline = somali_headline.strip() # Final strip for any remaining whitespace
+            somali_headline = somali_headline.strip()
 
-
-            # --- Main Message Format (English only, no flags) ---
             message_to_send = (
                 f"**DEGDEG 🔴**\n\n" 
                 f"{remove_flag_emojis(cleaned_english_headline)}" 
@@ -148,16 +167,17 @@ async def fetch_and_post_headlines():
                 parse_mode='Markdown', 
                 disable_web_page_preview=True 
             )
-            print(f"Posted: '{cleaned_english_headline}'") # Log only English posted
+            print(f"Posted: '{cleaned_english_headline}'")
             
+            # --- IMPORTANT: Update and save last_posted_link after successful send ---
             last_posted_link = entry.link 
+            save_last_posted_link(last_posted_link)
             
-            await asyncio.sleep(1) # Small delay to avoid hitting Telegram API limits
+            await asyncio.sleep(1) 
 
         except Exception as e:
             print(f"Error processing or posting headline '{english_headline_raw}': {e}")
             try:
-                # Fallback message (English only, no flags, even in error case)
                 fallback_message = (
                     f"**DEGDEG 🔴**\n\n" 
                     f"{remove_flag_emojis(cleaned_english_headline)}" 
@@ -169,6 +189,9 @@ async def fetch_and_post_headlines():
                     disable_web_page_preview=True
                 )
                 print(f"Posted original English due to error: '{cleaned_english_headline}'")
+                # Even on fallback, if message was sent, update the link to prevent re-sending this specific item.
+                last_posted_link = entry.link
+                save_last_posted_link(last_posted_link)
             except Exception as inner_e:
                 print(f"Failed to post even original English headline '{cleaned_english_headline}': {inner_e}")
     
@@ -179,12 +202,13 @@ async def fetch_and_post_headlines():
 # --- Main Execution Loop ---
 if __name__ == "__main__":
     print("Bot starting...")
+    # --- Load last posted link at startup ---
+    last_posted_link = load_last_posted_link()
     
     while True:
-        # Note: asyncio.run() will block until fetch_and_post_headlines completes.
-        # This is fine for a simple polling loop.
         asyncio.run(fetch_and_post_headlines()) 
         
         current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()) 
         print(f"[{current_time_str}] Sleeping for 1 minute...")
         time.sleep(60)
+
