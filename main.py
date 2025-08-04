@@ -1,3 +1,6 @@
+import openai, sys, os, logging
+logging.basicConfig(level=logging.INFO)
+logging.info("openai version: %s  (exe: %s)", openai.__version__, sys.executable)
 import os
 import time
 import re
