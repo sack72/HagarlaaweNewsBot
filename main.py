@@ -7,8 +7,8 @@ import logging
 import feedparser
 import pytz
 from telegram import Bot
-from openai import AsyncOpenAI      # NEW async client
-import httpx                        # NEW async http client
+from openai import AsyncOpenAI
+import httpx
 
 # ------------------------------------------------------------------
 # 1. Config
@@ -29,7 +29,15 @@ LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
 # ------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 
-KEYWORDS = []
+# Updated KEYWORDS list to filter for specific trades, politicians, and economic reports
+KEYWORDS = [
+    "AUD", "GBP", "EUR", "NZD", "USD", "JPY", "CAD", "CHF", "forex",
+    "trade", "market", "gold", "silver", "oil", "crude", "crypto", "bitcoin",
+    "ethereum", "Fed", "ECB", "BOJ", "inflation", "rate", "Powell",
+    "Lagarde", "Trump", "Biden", "Putin", "Xi", "sunak", "macron",
+    "cpi", "ppi", "jobs", "employment", "non-farm payrolls", "nfp", "unemployment",
+    "interest rate", "retail sales", "gdp"
+]
 
 SOMALI_PREFIXES_TO_REMOVE = [
     "Qeybta Abaalmarinta:", "Qeyb-qabad:", "Qeyb-dhaqameedka", "Qeyb-dhaqaale:",
@@ -122,7 +130,8 @@ async def fetch_and_post_headlines(bot):
         logging.info("Translating: %s", title)
         somali = await translate_text_with_gpt(title)
 
-        message = f"**DEGDEG 🔴**\n\n*{title}*\n\n{somali}"
+        # Updated message format to only include the translated post
+        message = f"**DEGDEG 🔴**\n\n{somali}"
         try:
             await bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
