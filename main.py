@@ -9,71 +9,76 @@ import pytz
 from telegram import Bot
 from openai import AsyncOpenAI
 import httpx
+import discord  # discord.py >= 2.3.2
 
-# ------------------------------------------------------------------
-# 1. Configuration (from environment)
-# ------------------------------------------------------------------
-TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID  = os.getenv("TELEGRAM_CHANNEL_ID")
+###############################################################################
+# 1. Environment variables
+###############################################################################
+TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+DISCORD_BOT_TOKEN   = os.getenv("DISCORD_BOT_TOKEN")
+DISCORD_CHANNEL_ID  = int(os.getenv("DISCORD_CHANNEL_ID") or 0)
 FINANCIAL_JUICE_RSS_FEED_URL = os.getenv("FINANCIAL_JUICE_RSS_FEED_URL")
-OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY is missing!")
+if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, DISCORD_BOT_TOKEN,
+            DISCORD_CHANNEL_ID, FINANCIAL_JUICE_RSS_FEED_URL, OPENAI_API_KEY]):
+    raise ValueError("One or more required environment variables are missing.")
 
-# ------------------------------------------------------------------
-# 2. Filter keywords (Forex, metals, oil, politicians, central banks)
-# ------------------------------------------------------------------
+###############################################################################
+# 2. Logging
+###############################################################################
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+###############################################################################
+# 3. Keyword filter
+###############################################################################
 KEYWORDS = [
-    # FX majors & minors
+    # FX pairs
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCAD", "USDCHF",
     "EURGBP", "GBPJPY", "EURJPY", "AUDJPY", "AUDNZD", "GBPAUD", "GBPCAD",
     # Metals & oil
-    "XAUUSD", "XAGUSD", "GOLD", "SILVER", "OIL", "WTI", "BRENT",
-    # Politicians / central bankers
-    "TRUMP", "BIDEN", "POWELL", "YELLEN", "BASSETT", "KLINGBEIL",
-    "SCHOLZ", "MACRON", "SUNAK", "BOJO", "FED", "ECB", "BOE", "BOJ", "RBA", "SNB",
+    "XAUUSD", "GOLD", "XAGUSD", "SILVER", "OIL", "WTI", "BRENT",
+    # Politicians & central banks
+    "TRUMP", "BIDEN", "POWELL", "YELLEN", "BASSETT", "KLINGBEIL", "SCHOLZ",
+    "MACRON", "SUNAK", "FED", "ECB", "BOE", "BOJ", "RBA", "SNB"
 ]
 
-# Somali prefixes we strip after translation
-SOMALI_PREFIXES_TO_REMOVE = [
-    "Qeybta Abaalmarinta:", "Qeyb-qabad:", "Qeyb-dhaqameedka", "Qeyb-dhaqaale:",
-    "Fieldinice:", "Fieldjuice:", "Dhaqaale:", "Abuurjuice:",
-]
+def contains_keywords(text: str) -> bool:
+    return any(k in text.upper() for k in KEYWORDS)
 
-# ------------------------------------------------------------------
-# 3. Persistent storage
-# ------------------------------------------------------------------
-PERSISTENT_STORAGE_PATH = "/bot-data"
-LAST_LINK_FILE          = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
-
-logging.basicConfig(level=logging.INFO)
-
-# ------------------------------------------------------------------
-# 4. Small helpers
-# ------------------------------------------------------------------
-def contains_keywords(text: str, keywords) -> bool:
-    text_upper = text.upper()
-    return any(k in text_upper for k in keywords)
-
+###############################################################################
+# 4. Remove flags / clean title
+###############################################################################
 def remove_flag_emojis(text: str) -> str:
     return re.sub(r'[\U0001F1E6-\U0001F1FF]{2}:?\s*', '', text, flags=re.UNICODE).strip()
 
-def load_last_posted_link():
+###############################################################################
+# 5. Persistent storage
+###############################################################################
+PERSISTENT_STORAGE_PATH = "/bot-data"
+LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
+
+def load_last_posted_link() -> str | None:
     if os.path.isfile(LAST_LINK_FILE):
         with open(LAST_LINK_FILE) as f:
             return f.readline().strip() or None
     return None
 
-def save_last_posted_link(link: str):
+def save_last_posted_link(link: str) -> None:
     os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
     with open(LAST_LINK_FILE, "w") as f:
         f.write(link)
 
-# ------------------------------------------------------------------
-# 5. Translation (async)
-# ------------------------------------------------------------------
-async def translate_text_with_gpt(text: str, lang: str = "Somali") -> str:
+###############################################################################
+# 6. Translation
+###############################################################################
+SOMALI_PREFIXES_TO_REMOVE = [
+    "Qeybta Abaalmarinta:", "Qeyb-qabad:", "Qeyb-dhaqameedka", "Qeyb-dhaqaale:",
+    "Fieldinice:", "Fieldjuice:", "Dhaqaale:", "Abuurjuice:",
+]
+
+async def translate_to_somali(text: str) -> str:
     async with httpx.AsyncClient() as http_client:
         client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
         response = await client.chat.completions.create(
@@ -81,28 +86,39 @@ async def translate_text_with_gpt(text: str, lang: str = "Somali") -> str:
             messages=[
                 {
                     "role": "system",
-                    "content": f"You are a professional translator. Translate the following English financial news into {lang}. Preserve tone and meaning."
+                    "content": "You are a professional translator. Translate the following English financial news into Somali. Preserve tone and meaning."
                 },
                 {"role": "user", "content": text}
             ],
             temperature=0.3,
-            max_tokens=1000,
+            max_tokens=1000
         )
         translated = response.choices[0].message.content.strip()
-
-        # Remove unwanted Somali prefixes
         for prefix in SOMALI_PREFIXES_TO_REMOVE:
             if translated.startswith(prefix):
                 translated = translated[len(prefix):].strip()
         return translated
 
-# ------------------------------------------------------------------
-# 6. Fetch headlines & post loop
-# ------------------------------------------------------------------
+###############################################################################
+# 7. Discord client
+###############################################################################
+discord_client = discord.Client(intents=discord.Intents.default())
+
+async def post_to_discord(text: str) -> None:
+    await discord_client.wait_until_ready()
+    channel = discord_client.get_channel(DISCORD_CHANNEL_ID)
+    if channel:
+        try:
+            await channel.send(text)
+        except Exception as e:
+            logging.error("Discord send failed: %s", e)
+
+###############################################################################
+# 8. Core fetch-post loop
+###############################################################################
 async def fetch_and_post_headlines(bot: Bot):
     last_link = load_last_posted_link()
-
-    logging.info("Fetching feed: %s", FINANCIAL_JUICE_RSS_FEED_URL)
+    logging.info("Fetching %s", FINANCIAL_JUICE_RSS_FEED_URL)
     feed = feedparser.parse(FINANCIAL_JUICE_RSS_FEED_URL)
 
     new_entries = []
@@ -120,19 +136,16 @@ async def fetch_and_post_headlines(bot: Bot):
         title_raw = entry.title
         link = entry.link if hasattr(entry, "link") else None
 
-        # Clean title
         title = remove_flag_emojis(
             title_raw.replace("FinancialJuice:", "").replace("Abuurjuice:", "").strip()
         )
-
-        if not contains_keywords(title, KEYWORDS):
-            logging.debug("Skipping (no keywords): %s", title)
+        if not contains_keywords(title):
             continue
 
-        logging.info("Translating: %s", title)
-        somali_text = await translate_text_with_gpt(title)
+        logging.info("Processing: %s", title)
+        somali_text = await translate_to_somali(title)
 
-        # Post only the Somali translation
+        # Telegram
         try:
             await bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
@@ -140,18 +153,25 @@ async def fetch_and_post_headlines(bot: Bot):
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
-            if link:
-                save_last_posted_link(link)
         except Exception as e:
             logging.error("Telegram send failed: %s", e)
 
-        await asyncio.sleep(1)  # 1-second throttle
+        # Discord
+        await post_to_discord(somali_text)
 
-# ------------------------------------------------------------------
-# 7. Main entry
-# ------------------------------------------------------------------
+        if link:
+            save_last_posted_link(link)
+
+        await asyncio.sleep(1)
+
+###############################################################################
+# 9. Main runner
+###############################################################################
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    # Start Discord client in background
+    asyncio.create_task(discord_client.start(DISCORD_BOT_TOKEN))
+
     while True:
         try:
             await fetch_and_post_headlines(bot)
