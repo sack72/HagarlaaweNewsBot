@@ -81,7 +81,6 @@ async def fetch_and_post_headlines(bot: Bot):
         new_entries.reverse()
         all_new_entries.extend(new_entries)
 
-    # Sort oldest → newest (published_parsed may be missing → use current time)
     all_new_entries.sort(
         key=lambda e: e.get("published_parsed") or time.gmtime()
     )
@@ -100,11 +99,18 @@ async def fetch_and_post_headlines(bot: Bot):
         logging.info("Translating: %s", title)
         somali_text = await translate_to_somali(title)
 
-        # Telegram
+        # --- Message: English + Somali ---
+        message_to_send = (
+            f"*📰 English*\n{title}\n\n"
+            f"*🇸🇴 Somali*\n{somali_text}"
+        )
+        if link:
+            message_to_send += f"\n\n🔗 [Read more]({link})"
+
         try:
             await bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
-                text=somali_text,
+                text=message_to_send,
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
