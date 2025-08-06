@@ -65,7 +65,11 @@ async def translate_to_somali(text: str) -> str:
 async def fetch_and_post_headlines(bot: Bot):
     last_link = load_last_posted_link()
     logging.info("Fetching %s", RTT_RSS_FEED_URL)
-    feed = feedparser.parse(RTT_RSS_FEED_URL)
+    rss_urls = [u.strip() for u in RTT_RSS_FEED_URL.split(",") if u.strip()]
+for url in rss_urls:
+    logging.info("Fetching %s", url)
+    feed = feedparser.parse(url)
+    ...  # (same processing logic you already have)
 
     new_entries = []
     for entry in feed.entries:
