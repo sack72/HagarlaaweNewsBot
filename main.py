@@ -14,11 +14,14 @@ import httpx
 ###############################################################################
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-RTT_RSS_FEED_URL    = os.getenv("RTT_RSS_FEED_URL")
+RSS_URLS_RAW        = os.getenv("RTT_RSS_FEED_URL", "")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 
-if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, RTT_RSS_FEED_URL, OPENAI_API_KEY]):
+if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, RSS_URLS_RAW, OPENAI_API_KEY]):
     raise ValueError("Missing required environment variables.")
+
+# Split comma-separated feeds
+RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -40,7 +43,7 @@ def save_last_posted_link(link: str) -> None:
         f.write(link)
 
 ###############################################################################
-# 3. Translation (Somali only)
+# 3. Translation
 ###############################################################################
 async def translate_to_somali(text: str) -> str:
     async with httpx.AsyncClient() as http_client:
@@ -64,25 +67,30 @@ async def translate_to_somali(text: str) -> str:
 ###############################################################################
 async def fetch_and_post_headlines(bot: Bot):
     last_link = load_last_posted_link()
-    logging.info("Fetching %s", RTT_RSS_FEED_URL)
-    rss_urls = [u.strip() for u in RTT_RSS_FEED_URL.split(",") if u.strip()]
-for url in rss_urls:
-    logging.info("Fetching %s", url)
-    feed = feedparser.parse(url)
-    ...  # (same processing logic you already have)
 
-    new_entries = []
-    for entry in feed.entries:
-        if hasattr(entry, "link") and entry.link == last_link:
-            break
-        new_entries.append(entry)
-    new_entries.reverse()
+    all_new_entries = []
+    for url in RSS_URLS:
+        logging.info("Fetching %s", url)
+        feed = feedparser.parse(url)
 
-    if not new_entries:
+        new_entries = []
+        for entry in feed.entries:
+            if hasattr(entry, "link") and entry.link == last_link:
+                break
+            new_entries.append(entry)
+        new_entries.reverse()
+        all_new_entries.extend(new_entries)
+
+    # Sort oldest → newest (published_parsed may be missing → use current time)
+    all_new_entries.sort(
+        key=lambda e: e.get("published_parsed") or time.gmtime()
+    )
+
+    if not all_new_entries:
         logging.info("No new headlines.")
         return
 
-    for entry in new_entries:
+    for entry in all_new_entries:
         title_raw = entry.title
         link = entry.link if hasattr(entry, "link") else None
 
