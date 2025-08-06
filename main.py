@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 import httpx
 
 ###############################################################################
-# 1. Environment variables
+# 1. Environment
 ###############################################################################
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
@@ -20,9 +20,7 @@ OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, RSS_URLS_RAW, OPENAI_API_KEY]):
     raise ValueError("Missing required environment variables.")
 
-# Split comma-separated feeds
 RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 ###############################################################################
@@ -81,9 +79,7 @@ async def fetch_and_post_headlines(bot: Bot):
         new_entries.reverse()
         all_new_entries.extend(new_entries)
 
-    all_new_entries.sort(
-        key=lambda e: e.get("published_parsed") or time.gmtime()
-    )
+    all_new_entries.sort(key=lambda e: e.get("published_parsed") or time.gmtime())
 
     if not all_new_entries:
         logging.info("No new headlines.")
@@ -93,19 +89,15 @@ async def fetch_and_post_headlines(bot: Bot):
         title_raw = entry.title
         link = entry.link if hasattr(entry, "link") else None
 
-        # Clean title
+        # 1) Remove flag emojis
         title = re.sub(r'[\U0001F1E6-\U0001F1FF]{2}:?\s*', '', title_raw, flags=re.UNICODE).strip()
+        # 2) Remove feed prefix like "FinancialJuice:"
+        title = re.sub(r'^[^:]+:\s*', '', title).strip()
 
-        logging.info("Translating: %s", title)
         somali_text = await translate_to_somali(title)
 
-        # --- Message: English + Somali ---
-        message_to_send = (
-            f"*📰 English*\n{title}\n\n"
-            f"*🇸🇴 Somali*\n{somali_text}"
-        )
-        if link:
-            message_to_send += f"\n\n🔗 [Read more]({link})"
+        # 3) Build the final message (flags only)
+        message_to_send = f"🇬🇧 {title}\n\n🇸🇴 {somali_text}"
 
         try:
             await bot.send_message(
