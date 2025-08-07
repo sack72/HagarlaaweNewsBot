@@ -3,7 +3,6 @@ import time
 import re
 import asyncio
 import logging
-
 import feedparser
 from telegram import Bot
 from openai import AsyncOpenAI
@@ -63,10 +62,23 @@ async def translate_to_somali(text: str) -> str:
 ###############################################################################
 # 4. Core loop
 ###############################################################################
+
+# NEW: Define a dictionary of target countries and their corresponding flags
+TARGET_FOREX_NEWS = {
+    'US': '🇺🇸', 'USA': '🇺🇸', 'United States': '🇺🇸', 'USD': '🇺🇸',
+    'Euro': '🇪🇺', 'EUR': '🇪🇺', 'Europe': '🇪🇺', 'EU': '🇪🇺',
+    'Japan': '🇯🇵', 'JPY': '🇯🇵',
+    'UK': '🇬🇧', 'Britain': '🇬🇧', 'Great Britain': '🇬🇧', 'GBP': '🇬🇧',
+    'Canada': '🇨🇦', 'CAD': '🇨🇦',
+    'Switzerland': '🇨🇭', 'Swiss': '🇨🇭', 'CHF': '🇨🇭',
+    'Australia': '🇦🇺', 'AUD': '🇦🇺',
+    'New Zealand': '🇳🇿', 'NZD': '🇳🇿',
+}
+
 async def fetch_and_post_headlines(bot: Bot):
     last_link = load_last_posted_link()
-
     all_new_entries = []
+
     for url in RSS_URLS:
         logging.info("Fetching %s", url)
         feed = feedparser.parse(url)
@@ -89,15 +101,26 @@ async def fetch_and_post_headlines(bot: Bot):
         title_raw = entry.title
         link = entry.link if hasattr(entry, "link") else None
 
-        # 1) Remove flag emojis
+        # NEW: Check if the headline is from a target Forex country
+        found_country_flag = None
+        for country_name, flag in TARGET_FOREX_NEWS.items():
+            if re.search(r'\b' + re.escape(country_name) + r'\b', title_raw, re.IGNORECASE):
+                found_country_flag = flag
+                break
+
+        if not found_country_flag:
+            logging.info(f"Skipping non-Forex news: {title_raw}")
+            continue
+
+        # 1) Remove any flag emojis to avoid duplicates and non-relevant ones
         title = re.sub(r'[\U0001F1E6-\U0001F1FF]{2}:?\s*', '', title_raw, flags=re.UNICODE).strip()
         # 2) Remove feed prefix like "FinancialJuice:"
         title = re.sub(r'^[^:]+:\s*', '', title).strip()
 
         somali_text = await translate_to_somali(title)
 
-        # 3) Build the final message (flags only)
-        message_to_send = f"🇬🇧 {title}\n\n🇸🇴 {somali_text}"
+        # 3) Build the final message with the detected flag
+        message_to_send = f"{found_country_flag} {title}\n\n🇸🇴 {somali_text}"
 
         try:
             await bot.send_message(
