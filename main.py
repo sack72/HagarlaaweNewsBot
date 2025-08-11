@@ -1,4 +1,6 @@
 import os
+import time
+import re
 import asyncio
 import logging
 import feedparser
@@ -6,79 +8,147 @@ from telegram import Bot
 from openai import AsyncOpenAI
 import httpx
 
-# ---------- ENV ----------
-BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID         = os.getenv("TELEGRAM_CHANNEL_ID")
-FEED_URLS       = [u.strip() for u in os.getenv("RSS_FEED_URLS", "").split(",") if u.strip()]
-OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
+###############################################################################
+# 1. Environment
+###############################################################################
+TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+RSS_URLS_RAW        = os.getenv("RTT_RSS_FEED_URL", "")
+OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 
-if not all([BOT_TOKEN, CHAT_ID, FEED_URLS, OPENAI_API_KEY]):
-    raise ValueError("Set TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, RSS_FEED_URLS, and OPENAI_API_KEY")
+if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, RSS_URLS_RAW, OPENAI_API_KEY]):
+    raise ValueError("Missing required environment variables.")
 
-# ---------- PERSISTENCE ----------
-LAST_FILE = "/bot-data/last_link.txt"
+RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def load_last():
-    if os.path.isfile(LAST_FILE):
-        with open(LAST_FILE) as f:
-            return f.readline().strip()
+###############################################################################
+# 2. Persistent storage
+###############################################################################
+PERSISTENT_STORAGE_PATH = "/bot-data"
+LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
+
+def load_last_posted_link() -> str | None:
+    if os.path.isfile(LAST_LINK_FILE):
+        with open(LAST_LINK_FILE) as f:
+            return f.readline().strip() or None
     return None
 
-def save_last(link):
-    os.makedirs(os.path.dirname(LAST_FILE), exist_ok=True)
-    with open(LAST_FILE, "w") as f:
+def save_last_posted_link(link: str) -> None:
+    os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
+    with open(LAST_LINK_FILE, "w") as f:
         f.write(link)
 
-# ---------- TRANSLATION ----------
-async def to_somali(text: str) -> str:
+###############################################################################
+# 3. Translation
+###############################################################################
+async def translate_to_somali(text: str) -> str:
     async with httpx.AsyncClient() as http_client:
         client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
-        resp = await client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Translate the following English text into Somali. Keep the tone and meaning."},
+                {
+                    "role": "system",
+                    "content": "You are a professional translator. Translate the following English financial news into Somali. Preserve tone and meaning."
+                },
                 {"role": "user", "content": text}
             ],
             temperature=0.3,
-            max_tokens=1000
+            max_tokens=1000,
         )
-        return resp.choices[0].message.content.strip()
+        return response.choices[0].message.content.strip()
 
-# ---------- POSTING ----------
-async def post_new_entries(bot: Bot):
-    last = load_last()
-    new_entries = []
+###############################################################################
+# 4. Core loop
+###############################################################################
 
-    for url in FEED_URLS:
+# NEW: Define a dictionary of target countries and their corresponding flags
+TARGET_FOREX_NEWS = {
+    'US': '🇺🇸', 'USA': '🇺🇸', 'United States': '🇺🇸', 'USD': '🇺🇸',
+    'Euro': '🇪🇺', 'EUR': '🇪🇺', 'Europe': '🇪🇺', 'EU': '🇪🇺',
+    'Japan': '🇯🇵', 'JPY': '🇯🇵',
+    'UK': '🇬🇧', 'Britain': '🇬🇧', 'Great Britain': '🇬🇧', 'GBP': '🇬🇧',
+    'Canada': '🇨🇦', 'CAD': '🇨🇦',
+    'Switzerland': '🇨🇭', 'Swiss': '🇨🇭', 'CHF': '🇨🇭',
+    'Australia': '🇦🇺', 'AUD': '🇦🇺',
+    'New Zealand': '🇳🇿', 'NZD': '🇳🇿',
+}
+
+async def fetch_and_post_headlines(bot: Bot):
+    last_link = load_last_posted_link()
+    all_new_entries = []
+
+    for url in RSS_URLS:
+        logging.info("Fetching %s", url)
         feed = feedparser.parse(url)
+
+        new_entries = []
         for entry in feed.entries:
-            if entry.link == last:
+            if hasattr(entry, "link") and entry.link == last_link:
                 break
             new_entries.append(entry)
         new_entries.reverse()
+        all_new_entries.extend(new_entries)
 
-    if not new_entries:
-        logging.info("Nothing new.")
+    all_new_entries.sort(key=lambda e: e.get("published_parsed") or time.gmtime())
+
+    if not all_new_entries:
+        logging.info("No new headlines.")
         return
 
-    for entry in new_entries:
-        english = entry.title
-        somali  = await to_somali(english)
-        text    = f"{english}\n\n🇸🇴 {somali}\n\n{entry.link}"
-        await bot.send_message(chat_id=CHAT_ID, text=text, disable_web_page_preview=True)
-        save_last(entry.link)
+    for entry in all_new_entries:
+        title_raw = entry.title
+        link = entry.link if hasattr(entry, "link") else None
+
+        # NEW: Check if the headline is from a target Forex country
+        found_country_flag = None
+        for country_name, flag in TARGET_FOREX_NEWS.items():
+            if re.search(r'\b' + re.escape(country_name) + r'\b', title_raw, re.IGNORECASE):
+                found_country_flag = flag
+                break
+
+        if not found_country_flag:
+            logging.info(f"Skipping non-Forex news: {title_raw}")
+            continue
+
+        # 1) Remove any flag emojis to avoid duplicates and non-relevant ones
+        title = re.sub(r'[\U0001F1E6-\U0001F1FF]{2}:?\s*', '', title_raw, flags=re.UNICODE).strip()
+        # 2) Remove feed prefix like "FinancialJuice:"
+        title = re.sub(r'^[^:]+:\s*', '', title).strip()
+
+        somali_text = await translate_to_somali(title)
+
+        # 3) Build the final message with the detected flag
+        message_to_send = f"{found_country_flag} {title}\n\n🇸🇴 {somali_text}"
+
+        try:
+            await bot.send_message(
+                chat_id=TELEGRAM_CHANNEL_ID,
+                text=message_to_send,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logging.error("Telegram send failed: %s", e)
+
+        if link:
+            save_last_posted_link(link)
+
         await asyncio.sleep(1)
 
-# ---------- MAIN ----------
+###############################################################################
+# 5. Main runner
+###############################################################################
 async def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
-    bot = Bot(token=BOT_TOKEN)
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
     while True:
         try:
-            await post_new_entries(bot)
+            await fetch_and_post_headlines(bot)
         except Exception as e:
-            logging.exception("Error: %s", e)
+            logging.exception("Main-loop error: %s", e)
         await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
