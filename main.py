@@ -1,11 +1,12 @@
 import os
 import time
+import re
 import asyncio
 import logging
 import feedparser
-import httpx
 from telegram import Bot
 from openai import AsyncOpenAI
+import httpx
 
 ###############################################################################
 # 1. Environment Variables
@@ -27,21 +28,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 PERSISTENT_STORAGE_PATH = "/bot-data"
 LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
 
-def load_last_posted_link() -> str | None:
+def load_last_posted_link():
+    """Load last posted RSS link from storage."""
     if os.path.isfile(LAST_LINK_FILE):
         with open(LAST_LINK_FILE) as f:
             return f.readline().strip() or None
     return None
 
-def save_last_posted_link(link: str) -> None:
+def save_last_posted_link(link):
+    """Save last posted RSS link to storage."""
     os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
     with open(LAST_LINK_FILE, "w") as f:
         f.write(link)
 
 ###############################################################################
-# 3. Translation
+# 3. Translation to Somali
 ###############################################################################
-async def translate_to_somali(text: str) -> str:
+async def translate_to_somali(text):
     async with httpx.AsyncClient() as http_client:
         client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
         response = await client.chat.completions.create(
@@ -61,7 +64,7 @@ async def translate_to_somali(text: str) -> str:
 ###############################################################################
 # 4. Core loop: Fetch & Post all RSS items
 ###############################################################################
-async def fetch_and_post_headlines(bot: Bot):
+async def fetch_and_post_headlines(bot):
     last_link = load_last_posted_link()
     all_new_entries = []
 
@@ -88,14 +91,13 @@ async def fetch_and_post_headlines(bot: Bot):
         title_raw = entry.title
         link = entry.link if hasattr(entry, "link") else None
 
-        # Clean title: remove emojis or feed prefixes
-        title = title_raw
-        title = title.strip()
+        # Clean title
+        title = title_raw.strip()
 
-        # Translate to Somali
+        # Translate
         somali_text = await translate_to_somali(title)
 
-        # Build final message
+        # Build message
         message_to_send = f"{title}\n\n🇸🇴 {somali_text}"
         if link:
             message_to_send += f"\n🔗 {link}"
@@ -111,11 +113,11 @@ async def fetch_and_post_headlines(bot: Bot):
         except Exception as e:
             logging.error("Telegram send failed: %s", e)
 
-        # Save last posted link
+        # Save last link
         if link:
             save_last_posted_link(link)
 
-        await asyncio.sleep(1)  # small delay between posts
+        await asyncio.sleep(1)  # delay between posts
 
 ###############################################################################
 # 5. Main runner
@@ -130,17 +132,4 @@ async def main():
         await asyncio.sleep(60)  # check every minute
 
 if __name__ == "__main__":
-    asyncio.run(main())            await bot.send_message(
-                chat_id=TELEGRAM_CHANNEL_ID,
-                text=message_to_send,
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-        except Exception as e:
-            logging.error("Telegram send failed: %s", e)
-
-        if link:
-            save_last_posted_link(link)
-
-        await asyncio.sleep(1)
-
+    asyncio.run(main())
