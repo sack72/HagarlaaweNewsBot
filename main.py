@@ -97,10 +97,8 @@ async def fetch_and_post_headlines(bot):
         # Translate
         somali_text = await translate_to_somali(title)
 
-        # Build message
-        message_to_send = f"{title}\n\n🇸🇴 {somali_text}"
-        if link:
-            message_to_send += f"\n🔗 {link}"
+        # Build message with English and Somali flags, no link
+        message_to_send = f"🇬🇧 {title}\n\n🇸🇴 {somali_text}"
 
         try:
             await bot.send_message(
@@ -117,7 +115,7 @@ async def fetch_and_post_headlines(bot):
         if link:
             save_last_posted_link(link)
 
-        await asyncio.sleep(1)  # delay between posts
+        await asyncio.sleep(1)  # small delay between posts
 
 ###############################################################################
 # 5. Main runner
