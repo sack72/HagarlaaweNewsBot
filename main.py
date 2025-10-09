@@ -21,7 +21,6 @@ OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 # Check for environment variables
 if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, RSS_URLS_RAW, OPENAI_API_KEY]):
     logging.error("Missing required environment variables.")
-    # Use sys.exit(1) instead of ValueError for non-web applications like a Background Worker
     sys.exit(1) 
 
 RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
@@ -159,8 +158,8 @@ async def fetch_and_post_headlines(bot: Bot):
 
     for url in RSS_URLS:
         logging.info("Fetching %s", url)
-        # Use a timeout for feed parsing for robustness
-        feed = feedparser.parse(url, timeout=10) 
+        # FIX: Removed 'timeout=10' from feedparser.parse() to fix TypeError
+        feed = feedparser.parse(url) 
         
         new_entries = []
         for entry in feed.entries:
