@@ -127,7 +127,32 @@ async def translate_to_somali(text: str) -> str:
         return ""
 
 ###############################################################################
-# 5. Filters & Cleaning
+# 5. Facebook Posting
+###############################################################################
+async def post_to_facebook(message: str) -> None:
+    """Posts translated Somali message to Facebook Page."""
+    page_token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN")
+    page_id = os.getenv("FACEBOOK_PAGE_ID")
+
+    if not page_token or not page_id:
+        logging.warning("⚠️ Facebook credentials not set. Skipping Facebook post.")
+        return
+
+    fb_url = f"https://graph.facebook.com/{page_id}/feed"
+    data = {"message": message, "access_token": page_token}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(fb_url, data=data)
+            if response.status_code == 200:
+                logging.info("✅ Posted to Facebook successfully.")
+            else:
+                logging.error(f"❌ Facebook post failed: {response.text}")
+    except Exception as e:
+        logging.error(f"❌ Facebook error: {e}")
+
+###############################################################################
+# 6. Filters & Cleaning
 ###############################################################################
 TARGET_FOREX_NEWS = {
     "USD": "🇺🇸", "EUR": "🇪🇺", "JPY": "🇯🇵", "GBP": "🇬🇧",
@@ -151,7 +176,7 @@ def clean_title(t: str) -> str:
     return re.sub(r"^[^:]+:\s*", "", t).strip()
 
 ###############################################################################
-# 6. Fetch & Post Headlines
+# 7. Fetch & Post Headlines
 ###############################################################################
 async def fetch_and_post_headlines(bot: Bot):
     last_link = load_last_posted_link()
@@ -225,19 +250,24 @@ async def fetch_and_post_headlines(bot: Bot):
         logging.info(f"📤 Posting to Telegram: {message[:80]}...")
 
         try:
+            # Telegram Post
             await bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
                 text=message,
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
+
+            # Facebook Post
+            await post_to_facebook(message)
+
             if e.get("link"):
                 save_last_posted_link(e.get("link"))
             if e.get("published_parsed"):
                 latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
 
         except Exception as err:
-            logging.error(f"❌ Telegram send failed: {err}")
+            logging.error(f"❌ Telegram or Facebook post failed: {err}")
 
         await asyncio.sleep(1)
 
@@ -245,7 +275,7 @@ async def fetch_and_post_headlines(bot: Bot):
         save_last_published_time(latest_timestamp)
 
 ###############################################################################
-# 7. Main Runner
+# 8. Main Runner
 ###############################################################################
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
