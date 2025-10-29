@@ -195,9 +195,26 @@ async def fetch_and_post_headlines(bot: Bot):
                 flag = f
                 break
 
-        if not flag:
-            logging.info(f"❎ No target currency found in: {raw}")
-            continue
+        # =========================
+# 🔍 Detect Political / Central Bank Market Movers
+# =========================
+IMPORTANT_KEYWORDS = [
+    "Trump", "Biden", "White House", "Election", "Republican", "Democrat",
+    "Powell", "Fed", "Federal Reserve", "FOMC",
+    "Yellen", "Treasury Secretary",
+    "ECB", "Lagarde", "Bank of Japan", "BOJ",
+    "RBA", "Philip Lowe", "RBNZ", "BOE", "Andrew Bailey",
+    "SNB", "Jordan", "Bank of Canada", "BoC", "Tiff Macklem",
+    "China PBOC", "PBoC", "Xi Jinping", "Beijing policy"
+]
+
+if not flag:
+    if any(re.search(r'\b' + re.escape(k) + r'\b', raw, re.IGNORECASE) for k in IMPORTANT_KEYWORDS):
+        logging.info(f"🏛️ Important macro headline detected: {raw}")
+        flag = "🇺🇸"  # Default to USD impact
+    else:
+        logging.info(f"❎ No target currency or macro keyword found in: {raw}")
+        continue
 
         title = clean_title(raw)
         somali = await translate_to_somali(title)
