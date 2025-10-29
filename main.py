@@ -35,7 +35,7 @@ LAST_PUBLISHED_TIME_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_published
 def load_last_posted_link() -> Optional[str]:
     if os.path.isfile(LAST_LINK_FILE):
         try:
-            with open(LAST_LINK_FILE, 'r') as f:
+            with open(LAST_LINK_FILE, "r") as f:
                 return f.readline().strip() or None
         except IOError:
             return None
@@ -77,12 +77,16 @@ GLOSSARY = {
     "RBA": "Bangiga Dhexe ee Australiya",
     "BOE": "Bangiga Ingiriiska",
     "BOJ": "Bangiga Japan",
-    "ECB": "Bangiga Yurub"
+    "ECB": "Bangiga Yurub",
+    "GDP": "wax-soo-saarka guud ee dalka",
+    "recession": "hoos u dhac dhaqaale",
+    "unemployment": "shaqo la'aan",
+    "employment": "shaqaalaysiinta"
 }
 
 def apply_glossary(text: str) -> str:
     for eng, som in GLOSSARY.items():
-        pattern = re.compile(r'\b' + re.escape(eng) + r'\b', re.IGNORECASE)
+        pattern = re.compile(r"\b" + re.escape(eng) + r"\b", re.IGNORECASE)
         text = pattern.sub(som, text)
     return text
 
@@ -98,7 +102,7 @@ async def translate_to_somali(text: str) -> str:
             step1 = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "Translate this financial news into Somali accurately and clearly."},
+                    {"role": "system", "content": "Translate this financial news into Somali clearly and accurately."},
                     {"role": "user", "content": text}
                 ],
                 temperature=0.2,
@@ -109,7 +113,7 @@ async def translate_to_somali(text: str) -> str:
             step2 = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "Rewrite in professional Somali economic news style, like Bloomberg Somali."},
+                    {"role": "system", "content": "Rewrite in professional Somali financial-news style, concise and clear."},
                     {"role": "user", "content": first_pass}
                 ],
                 temperature=0.3,
@@ -126,13 +130,13 @@ async def translate_to_somali(text: str) -> str:
 # 5. Filters & Cleaning
 ###############################################################################
 TARGET_FOREX_NEWS = {
-    'USD': '🇺🇸', 'EUR': '🇪🇺', 'JPY': '🇯🇵', 'GBP': '🇬🇧',
-    'CAD': '🇨🇦', 'CHF': '🇨🇭', 'AUD': '🇦🇺', 'NZD': '🇳🇿',
-    'United States': '🇺🇸', 'Europe': '🇪🇺', 'Japan': '🇯🇵', 'UK': '🇬🇧',
-    'Canada': '🇨🇦', 'Swiss': '🇨🇭', 'Australia': '🇦🇺', 'New Zealand': '🇳🇿'
+    "USD": "🇺🇸", "EUR": "🇪🇺", "JPY": "🇯🇵", "GBP": "🇬🇧",
+    "CAD": "🇨🇦", "CHF": "🇨🇭", "AUD": "🇦🇺", "NZD": "🇳🇿",
+    "United States": "🇺🇸", "Europe": "🇪🇺", "Japan": "🇯🇵", "UK": "🇬🇧",
+    "Canada": "🇨🇦", "Swiss": "🇨🇭", "Australia": "🇦🇺", "New Zealand": "🇳🇿"
 }
 
-EXCLUSION_KEYWORDS = ["auction", "bid-to-cover", "treasury bill", "Energy", "Coal", "NATO"]
+EXCLUSION_KEYWORDS = ["auction", "bid-to-cover", "Energy", "Coal", "NATO"]
 
 def should_exclude_headline(title: str) -> bool:
     title_lower = title.lower()
@@ -143,8 +147,8 @@ def should_exclude_headline(title: str) -> bool:
     return False
 
 def clean_title(t: str) -> str:
-    t = re.sub(r'[\U0001F1E6-\U0001F1FF]{2}:?\s*', '', t)
-    return re.sub(r'^[^:]+:\s*', '', t).strip()
+    t = re.sub(r"[\U0001F1E6-\U0001F1FF]{2}:?\s*", "", t)
+    return re.sub(r"^[^:]+:\s*", "", t).strip()
 
 ###############################################################################
 # 6. Fetch & Post Headlines
@@ -189,7 +193,7 @@ async def fetch_and_post_headlines(bot: Bot):
 
         flag = None
         for c, f in TARGET_FOREX_NEWS.items():
-            if re.search(r'\b' + re.escape(c) + r'\b', raw, re.IGNORECASE):
+            if re.search(r"\b" + re.escape(c) + r"\b", raw, re.IGNORECASE):
                 flag = f
                 break
 
@@ -205,7 +209,7 @@ async def fetch_and_post_headlines(bot: Bot):
         ]
 
         if not flag:
-            if any(re.search(r'\b' + re.escape(k) + r'\b', raw, re.IGNORECASE) for k in IMPORTANT_KEYWORDS):
+            if any(re.search(r"\b" + re.escape(k) + r"\b", raw, re.IGNORECASE) for k in IMPORTANT_KEYWORDS):
                 logging.info(f"🏛️ Important macro headline detected: {raw}")
                 flag = "🇺🇸"
             else:
