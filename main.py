@@ -30,8 +30,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 ###############################################################################
 PERSISTENT_STORAGE_PATH = "/bot-data"
 LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
-LAST_PUBLISHED_TIME_FILE = os.path.join(PERSISTENT_STORAGE_STORAGE_PATH, "last_published_time.txt")
-
+LAST_PUBLISHED_TIME_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_published_time.txt")
 def load_last_posted_link() -> Optional[str]:
     if os.path.isfile(LAST_LINK_FILE):
         try:
