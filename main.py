@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 ###############################################################################
 PERSISTENT_STORAGE_PATH = "/bot-data"
 LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
-LAST_PUBLISHED_TIME_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_published_time.txt")
+LAST_PUBLISHED_TIME_FILE = os.path.join(PERSISTENT_STORAGE_STORAGE_PATH, "last_published_time.txt")
 
 def load_last_posted_link() -> Optional[str]:
     if os.path.isfile(LAST_LINK_FILE):
@@ -87,21 +87,18 @@ def apply_glossary(text: str) -> str:
     return text
 
 ###############################################################################
-# 4. Advanced Somali Translation (Two-Step Rewrite)
+# 4. Advanced Somali Translation
 ###############################################################################
 async def translate_to_somali(text: str) -> str:
     try:
+        logging.info(f"📝 Translating: {text}")
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
 
-            # Step A: Accurate translation
             step1 = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a financial translator. Translate to Somali with maximum economic accuracy."
-                    },
+                    {"role": "system", "content": "Translate to Somali with economic accuracy."},
                     {"role": "user", "content": text}
                 ],
                 temperature=0.0,
@@ -109,25 +106,18 @@ async def translate_to_somali(text: str) -> str:
             )
             first_pass = step1.choices[0].message.content.strip()
 
-            # Step B: Rewrite with professional Somali news style
-            somali_rewritten = await client.chat.completions.create(
+            step2 = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                          "Rewrite the Somali translation into a formal, clear, and professional "
-                          "economic news style used by financial media such as Bloomberg or Reuters. "
-                          "Keep all numbers exactly the same."
-                        )
-                    },
+                    {"role": "system", "content": "Rewrite professionally like Bloomberg Somali."},
                     {"role": "user", "content": first_pass}
                 ],
                 temperature=0.3,
                 max_tokens=300,
             )
-
-            return apply_glossary(somali_rewritten.choices[0].message.content.strip())
+            result = apply_glossary(step2.choices[0].message.content.strip())
+            logging.info(f"✅ Somali ready: {result[:60]}...")
+            return result
 
     except Exception as e:
         logging.error(f"Translation failed: {e}")
@@ -144,14 +134,14 @@ TARGET_FOREX_NEWS = {
 }
 
 EXCLUSION_KEYWORDS = [
-    "treasury bills", "sell $", "auction", "bid-to-cover", "bill",
-    "NATO", "Energy", "Coal"
+    "auction", "bid-to-cover", "treasury", "NATO", "Energy", "Coal"
 ]
 
 def should_exclude_headline(title: str) -> bool:
     title_lower = title.lower()
     for k in EXCLUSION_KEYWORDS:
         if k.lower() in title_lower:
+            logging.info(f"🚫 Excluded: {title}")
             return True
     return False
 
@@ -168,26 +158,35 @@ async def fetch_and_post_headlines(bot: Bot):
     new_items = []
 
     for url in RSS_URLS:
+        logging.info(f"🔄 Fetching feed: {url}")
         feed = feedparser.parse(url)
+        logging.info(f"✅ Found {len(feed.entries)} entries")
+
         for e in feed.entries:
             link = e.get("link")
             pub = e.get("published_parsed")
 
             if link == last_link:
+                logging.info("⛔ Reached last posted link. Stopping scan for this feed.")
                 break
+
             if pub and time.mktime(pub) <= last_time:
                 continue
+
             new_items.append(e)
 
     new_items.sort(key=lambda x: x.get("published_parsed") or time.gmtime())
 
     if not new_items:
+        logging.info("📭 No new items")
         return
 
     latest_timestamp = last_time
 
     for e in new_items:
         raw = e.title or ""
+        logging.info(f"📰 Found headline: {raw}")
+
         if should_exclude_headline(raw):
             continue
 
@@ -196,16 +195,18 @@ async def fetch_and_post_headlines(bot: Bot):
             if re.search(r'\b' + re.escape(c) + r'\b', raw, re.IGNORECASE):
                 flag = f
                 break
+
         if not flag:
+            logging.info(f"❎ No target currency found in: {raw}")
             continue
 
         title = clean_title(raw)
         somali = await translate_to_somali(title)
-
         if not somali:
             continue
 
         message = f"🇸🇴 {somali}"
+        logging.info(f"📤 Posting to Telegram: {message[:60]}...")
 
         try:
             await bot.send_message(
@@ -220,7 +221,7 @@ async def fetch_and_post_headlines(bot: Bot):
                 latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
 
         except Exception as err:
-            logging.error(err)
+            logging.error(f"❌ Telegram send failed: {err}")
 
         await asyncio.sleep(1)
 
@@ -233,10 +234,12 @@ async def fetch_and_post_headlines(bot: Bot):
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     while True:
+        logging.info("♻️ Checking for new headlines...")
         try:
             await fetch_and_post_headlines(bot)
         except Exception as e:
-            logging.exception("Fatal error. Restarting in 60s.")
+            logging.exception("❌ Fatal error. Restarting in 60s.")
+        logging.info("⏳ Sleeping 60 seconds...\n")
         await asyncio.sleep(60)
 
 if __name__ == "__main__":
