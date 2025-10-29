@@ -31,6 +31,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 PERSISTENT_STORAGE_PATH = "/bot-data"
 LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
 LAST_PUBLISHED_TIME_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_published_time.txt")
+
 def load_last_posted_link() -> Optional[str]:
     if os.path.isfile(LAST_LINK_FILE):
         try:
@@ -86,7 +87,7 @@ def apply_glossary(text: str) -> str:
     return text
 
 ###############################################################################
-# 4. Advanced Somali Translation
+# 4. Somali Translation
 ###############################################################################
 async def translate_to_somali(text: str) -> str:
     try:
@@ -97,10 +98,10 @@ async def translate_to_somali(text: str) -> str:
             step1 = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "Translate to Somali with economic accuracy."},
+                    {"role": "system", "content": "Translate this financial news into Somali accurately and clearly."},
                     {"role": "user", "content": text}
                 ],
-                temperature=0.0,
+                temperature=0.2,
                 max_tokens=300,
             )
             first_pass = step1.choices[0].message.content.strip()
@@ -108,16 +109,15 @@ async def translate_to_somali(text: str) -> str:
             step2 = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "Rewrite professionally like Bloomberg Somali."},
+                    {"role": "system", "content": "Rewrite in professional Somali economic news style, like Bloomberg Somali."},
                     {"role": "user", "content": first_pass}
                 ],
                 temperature=0.3,
                 max_tokens=300,
             )
             result = apply_glossary(step2.choices[0].message.content.strip())
-            logging.info(f"✅ Somali ready: {result[:60]}...")
+            logging.info(f"✅ Somali ready: {result[:70]}...")
             return result
-
     except Exception as e:
         logging.error(f"Translation failed: {e}")
         return ""
@@ -132,9 +132,7 @@ TARGET_FOREX_NEWS = {
     'Canada': '🇨🇦', 'Swiss': '🇨🇭', 'Australia': '🇦🇺', 'New Zealand': '🇳🇿'
 }
 
-EXCLUSION_KEYWORDS = [
-    "auction", "bid-to-cover", "treasury", "NATO", "Energy", "Coal"
-]
+EXCLUSION_KEYWORDS = ["auction", "bid-to-cover", "treasury bill", "Energy", "Coal", "NATO"]
 
 def should_exclude_headline(title: str) -> bool:
     title_lower = title.lower()
@@ -149,7 +147,7 @@ def clean_title(t: str) -> str:
     return re.sub(r'^[^:]+:\s*', '', t).strip()
 
 ###############################################################################
-# 6. Fetch & Post Somali Only News
+# 6. Fetch & Post Headlines
 ###############################################################################
 async def fetch_and_post_headlines(bot: Bot):
     last_link = load_last_posted_link()
@@ -195,34 +193,32 @@ async def fetch_and_post_headlines(bot: Bot):
                 flag = f
                 break
 
-        # =========================
-# 🔍 Detect Political / Central Bank Market Movers
-# =========================
-IMPORTANT_KEYWORDS = [
-    "Trump", "Biden", "White House", "Election", "Republican", "Democrat",
-    "Powell", "Fed", "Federal Reserve", "FOMC",
-    "Yellen", "Treasury Secretary",
-    "ECB", "Lagarde", "Bank of Japan", "BOJ",
-    "RBA", "Philip Lowe", "RBNZ", "BOE", "Andrew Bailey",
-    "SNB", "Jordan", "Bank of Canada", "BoC", "Tiff Macklem",
-    "China PBOC", "PBoC", "Xi Jinping", "Beijing policy"
-]
+        # 🔍 Detect Political / Central Bank Market Movers
+        IMPORTANT_KEYWORDS = [
+            "Trump", "Biden", "White House", "Election", "Republican", "Democrat",
+            "Powell", "Fed", "Federal Reserve", "FOMC",
+            "Yellen", "Treasury Secretary",
+            "ECB", "Lagarde", "Bank of Japan", "BOJ",
+            "RBA", "Philip Lowe", "RBNZ", "BOE", "Andrew Bailey",
+            "SNB", "Jordan", "Bank of Canada", "BoC", "Tiff Macklem",
+            "China PBOC", "PBoC", "Xi Jinping", "Beijing policy"
+        ]
 
-if not flag:
-    if any(re.search(r'\b' + re.escape(k) + r'\b', raw, re.IGNORECASE) for k in IMPORTANT_KEYWORDS):
-        logging.info(f"🏛️ Important macro headline detected: {raw}")
-        flag = "🇺🇸"  # Default to USD impact
-    else:
-        logging.info(f"❎ No target currency or macro keyword found in: {raw}")
-        continue
+        if not flag:
+            if any(re.search(r'\b' + re.escape(k) + r'\b', raw, re.IGNORECASE) for k in IMPORTANT_KEYWORDS):
+                logging.info(f"🏛️ Important macro headline detected: {raw}")
+                flag = "🇺🇸"
+            else:
+                logging.info(f"❎ No target currency or macro keyword found in: {raw}")
+                continue
 
         title = clean_title(raw)
         somali = await translate_to_somali(title)
         if not somali:
             continue
 
-        message = f"🇸🇴 {somali}"
-        logging.info(f"📤 Posting to Telegram: {message[:60]}...")
+        message = f"{flag} {somali}"
+        logging.info(f"📤 Posting to Telegram: {message[:80]}...")
 
         try:
             await bot.send_message(
