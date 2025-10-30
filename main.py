@@ -125,50 +125,63 @@ async def translate_to_somali(text: str) -> str:
     except Exception as e:
         logging.error(f"Translation failed: {e}")
         return ""
-        ###############################################################################
-# 5. Facebook Posting
+
 ###############################################################################
-async def post_to_facebook(message: str) -> None:
-    page_token, page_id = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN"), os.getenv("FACEBOOK_PAGE_ID")
-    if not page_token or not page_id:
-        logging.warning("⚠️ Facebook credentials not set.")
-        return
-
-    # ✅ Updated hashtags for Hagarlaawe HMM
-    msg = f"{message}\n\n#HagarlaaweHMM #WararkaFx #Forexsomali #Dhaqaalaha #Maaliyadda"
-    url = f"https://graph.facebook.com/{page_id}/feed"
-
+# 5. Market Sentiment with Confidence and Duration
+###############################################################################
+async def analyze_sentiment(text: str) -> tuple[str, str, int]:
+    """
+    Returns (tone, horizon, confidence)
+    where tone ∈ {Bullish, Bearish, Neutral},
+    horizon ∈ {Intraday, Short-term, Medium-term, Macro},
+    and confidence ∈ [0,100].
+    The model is cautious and penalizes mixed or distant signals.
+    """
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(url, data={"message": msg, "access_token": page_token})
-            logging.info("✅ Posted to Facebook successfully." if r.status_code == 200 else f"❌ Facebook post failed: {r.text}")
+        async with httpx.AsyncClient() as http_client:
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
+            resp = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a professional and conservative financial-markets analyst. "
+                            "Given a news headline, determine three things:\n"
+                            "1️⃣ Tone — Bullish, Bearish, or Neutral.\n"
+                            "2️⃣ Horizon — Intraday (1-4h), Short-term (1-3 days), Medium-term (1 week), or Macro (1 month+).\n"
+                            "3️⃣ Confidence — 0 to 100 depending on clarity and market relevance.\n"
+                            "Use realistic judgment: rate cuts or dovish talk → Bearish for the currency; "
+                            "rate hikes or hawkish tone → Bullish. "
+                            "If uncertain, classify as Neutral with low confidence.\n\n"
+                            "Output strictly in this format:\n"
+                            "Tone: <Bullish|Bearish|Neutral>; Horizon: <Intraday|Short-term|Medium-term|Macro>; Confidence: <0-100>"
+                        ),
+                    },
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.0,
+                max_tokens=25,
+            )
+            out = resp.choices[0].message.content.strip()
     except Exception as e:
-        logging.error(f"❌ Facebook error: {e}")
+        logging.error(f"Sentiment analysis failed: {e}")
+        return ("Neutral", "Unknown", 50)
 
-###############################################################################
-# 5. Facebook Posting
-###############################################################################
-async def post_to_facebook(message: str) -> None:
-    """Posts translated Somali message to Facebook Page."""
-    page_token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN")
-    page_id = os.getenv("FACEBOOK_PAGE_ID")
+    tone_match = re.search(r"\b(Bullish|Bearish|Neutral)\b", out, re.IGNORECASE)
+    tone = tone_match.group(1).capitalize() if tone_match else "Neutral"
 
-    if not page_token or not page_id:
-        logging.warning("⚠️ Facebook credentials not set. Skipping Facebook post.")
-        return
+    horizon_match = re.search(r"Horizon:\s*(Intraday|Short-term|Medium-term|Macro|Unknown)", out, re.IGNORECASE)
+    horizon = horizon_match.group(1).capitalize() if horizon_match else "Unknown"
 
-    fb_url = f"https://graph.facebook.com/{page_id}/feed"
-    data = {"message": message, "access_token": page_token}
-
+    conf_match = re.search(r"Confidence:\s*(\d{1,3})", out)
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(fb_url, data=data)
-            if response.status_code == 200:
-                logging.info("✅ Posted to Facebook successfully.")
-            else:
-                logging.error(f"❌ Facebook post failed: {response.text}")
-    except Exception as e:
-        logging.error(f"❌ Facebook error: {e}")
+        conf = int(conf_match.group(1)) if conf_match else 50
+    except:
+        conf = 50
+    conf = max(0, min(100, conf))
+
+    return (tone, horizon, conf)
 
 ###############################################################################
 # 6. Filters & Cleaning
@@ -241,7 +254,6 @@ async def fetch_and_post_headlines(bot: Bot):
                 flag = f
                 break
 
-        # 🔍 Detect Political / Central Bank Market Movers
         IMPORTANT_KEYWORDS = [
             "Trump", "Biden", "White House", "Election", "Republican", "Democrat",
             "Powell", "Fed", "Federal Reserve", "FOMC",
@@ -265,28 +277,26 @@ async def fetch_and_post_headlines(bot: Bot):
         if not somali:
             continue
 
-        message = f"{flag} {somali}"
+        tone, horizon, conf = await analyze_sentiment(title)
+        analysis_line = f"({tone} — {horizon} — Confidence: {conf}%)"
+
+        message = f"{flag} {somali}\n\n{analysis_line}"
         logging.info(f"📤 Posting to Telegram: {message[:80]}...")
 
         try:
-            # Telegram Post
             await bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
                 text=message,
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
-
-            # Facebook Post
-            await post_to_facebook(message)
-
             if e.get("link"):
                 save_last_posted_link(e.get("link"))
             if e.get("published_parsed"):
                 latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
 
         except Exception as err:
-            logging.error(f"❌ Telegram or Facebook post failed: {err}")
+            logging.error(f"❌ Telegram send failed: {err}")
 
         await asyncio.sleep(1)
 
