@@ -125,6 +125,25 @@ async def translate_to_somali(text: str) -> str:
     except Exception as e:
         logging.error(f"Translation failed: {e}")
         return ""
+        ###############################################################################
+# 5. Facebook Posting
+###############################################################################
+async def post_to_facebook(message: str) -> None:
+    page_token, page_id = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN"), os.getenv("FACEBOOK_PAGE_ID")
+    if not page_token or not page_id:
+        logging.warning("⚠️ Facebook credentials not set.")
+        return
+
+    # ✅ Updated hashtags for Hagarlaawe HMM
+    msg = f"{message}\n\n#HagarlaaweHMM #WararkaFx #Forexsomali #Dhaqaalaha #Maaliyadda"
+    url = f"https://graph.facebook.com/{page_id}/feed"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, data={"message": msg, "access_token": page_token})
+            logging.info("✅ Posted to Facebook successfully." if r.status_code == 200 else f"❌ Facebook post failed: {r.text}")
+    except Exception as e:
+        logging.error(f"❌ Facebook error: {e}")
 
 ###############################################################################
 # 5. Facebook Posting
