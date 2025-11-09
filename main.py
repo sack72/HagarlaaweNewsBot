@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # 2. Persistent Storage
 ###############################################################################
 PERSISTENT_STORAGE_PATH = "/bot-data"
+BRAND_IMAGE_PATH = os.path.join(PERSISTENT_STORAGE_PATH, "hmm_brand.jpg")
 LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
 LAST_PUBLISHED_TIME_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_published_time.txt")
 
@@ -130,13 +131,7 @@ async def translate_to_somali(text: str) -> str:
 # 5. Market Sentiment with Confidence and Duration
 ###############################################################################
 async def analyze_sentiment(text: str) -> tuple[str, str, int]:
-    """
-    Returns (tone, horizon, confidence)
-    where tone ∈ {Bullish, Bearish, Neutral},
-    horizon ∈ {Intraday, Short-term, Medium-term, Macro},
-    and confidence ∈ [0,100].
-    The model is cautious and penalizes mixed or distant signals.
-    """
+    """Returns (tone, horizon, confidence) with conservative assessment."""
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
@@ -151,9 +146,7 @@ async def analyze_sentiment(text: str) -> tuple[str, str, int]:
                             "1️⃣ Tone — Bullish, Bearish, or Neutral.\n"
                             "2️⃣ Horizon — Intraday (1-4h), Short-term (1-3 days), Medium-term (1 week), or Macro (1 month+).\n"
                             "3️⃣ Confidence — 0 to 100 depending on clarity and market relevance.\n"
-                            "Use realistic judgment: rate cuts or dovish talk → Bearish for the currency; "
-                            "rate hikes or hawkish tone → Bullish. "
-                            "If uncertain, classify as Neutral with low confidence.\n\n"
+                            "If uncertain, classify as Neutral with low confidence.\n"
                             "Output strictly in this format:\n"
                             "Tone: <Bullish|Bearish|Neutral>; Horizon: <Intraday|Short-term|Medium-term|Macro>; Confidence: <0-100>"
                         ),
@@ -180,7 +173,6 @@ async def analyze_sentiment(text: str) -> tuple[str, str, int]:
     except:
         conf = 50
     conf = max(0, min(100, conf))
-
     return (tone, horizon, conf)
 
 ###############################################################################
@@ -192,7 +184,6 @@ TARGET_FOREX_NEWS = {
     "United States": "🇺🇸", "Europe": "🇪🇺", "Japan": "🇯🇵", "UK": "🇬🇧",
     "Canada": "🇨🇦", "Swiss": "🇨🇭", "Australia": "🇦🇺", "New Zealand": "🇳🇿"
 }
-
 EXCLUSION_KEYWORDS = ["auction", "bid-to-cover", "Energy", "Coal", "NATO"]
 
 def should_exclude_headline(title: str) -> bool:
@@ -208,7 +199,35 @@ def clean_title(t: str) -> str:
     return re.sub(r"^[^:]+:\s*", "", t).strip()
 
 ###############################################################################
-# 7. Fetch & Post Headlines
+# 7. Facebook Posting (with hashtags)
+###############################################################################
+async def post_to_facebook(message: str) -> None:
+    """Posts translated Somali message to Facebook Page with hashtags."""
+    page_token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN")
+    page_id = os.getenv("FACEBOOK_PAGE_ID")
+
+    if not page_token or not page_id:
+        logging.warning("⚠️ Facebook credentials not set. Skipping Facebook post.")
+        return
+
+    hashtags = "\n\n#HagarlaaweHMM #WararkaFx #Forexsomali #Dhaqaalaha #Maaliyadda"
+    message_with_tags = message + hashtags
+
+    fb_url = f"https://graph.facebook.com/{page_id}/feed"
+    data = {"message": message_with_tags, "access_token": page_token}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(fb_url, data=data)
+            if response.status_code == 200:
+                logging.info("✅ Posted to Facebook successfully.")
+            else:
+                logging.error(f"❌ Facebook post failed: {response.text}")
+    except Exception as e:
+        logging.error(f"❌ Facebook error: {e}")
+
+###############################################################################
+# 8. Fetch & Post Headlines
 ###############################################################################
 async def fetch_and_post_headlines(bot: Bot):
     last_link = load_last_posted_link()
@@ -227,14 +246,11 @@ async def fetch_and_post_headlines(bot: Bot):
             if link == last_link:
                 logging.info("⛔ Reached last posted link. Stopping scan for this feed.")
                 break
-
             if pub and time.mktime(pub) <= last_time:
                 continue
-
             new_items.append(e)
 
     new_items.sort(key=lambda x: x.get("published_parsed") or time.gmtime())
-
     if not new_items:
         logging.info("📭 No new items")
         return
@@ -284,12 +300,28 @@ async def fetch_and_post_headlines(bot: Bot):
         logging.info(f"📤 Posting to Telegram: {message[:80]}...")
 
         try:
-            await bot.send_message(
-                chat_id=TELEGRAM_CHANNEL_ID,
-                text=message,
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
+            # 🖼️ Send with brand image if available
+            if os.path.exists(BRAND_IMAGE_PATH):
+                with open(BRAND_IMAGE_PATH, "rb") as photo:
+                    await bot.send_photo(
+                        chat_id=TELEGRAM_CHANNEL_ID,
+                        photo=photo,
+                        caption=message,
+                        parse_mode="Markdown",
+                    )
+                logging.info("✅ Posted with brand image.")
+            else:
+                await bot.send_message(
+                    chat_id=TELEGRAM_CHANNEL_ID,
+                    text=message,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                )
+                logging.info("✅ Posted without image (fallback).")
+
+            # ✅ Post to Facebook after Telegram
+            await post_to_facebook(message)
+
             if e.get("link"):
                 save_last_posted_link(e.get("link"))
             if e.get("published_parsed"):
@@ -304,7 +336,7 @@ async def fetch_and_post_headlines(bot: Bot):
         save_last_published_time(latest_timestamp)
 
 ###############################################################################
-# 8. Main Runner
+# 9. Main Runner
 ###############################################################################
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
