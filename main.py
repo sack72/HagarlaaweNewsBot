@@ -391,12 +391,15 @@ async def fetch_and_post_crypto(bot: Bot):
 # 9. Main Runner
 ###############################################################################
 async def main():
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)  # HMM bot
+    CRYPTO_BOT_TOKEN = os.getenv("TELEGRAM_CRYPTO_TOKEN")
+    crypto_bot = Bot(token=CRYPTO_BOT_TOKEN)  # separate crypto bot
+
     while True:
-        logging.info("♻️ Checking for new HMM headlines...")
+        logging.info("♻️ Checking for new headlines...")
         try:
-            await fetch_and_post_headlines(bot)   # Main Forex / Macro
-            await fetch_and_post_crypto(bot)      # Crypto (separate channel)
+            await fetch_and_post_headlines(bot)     # main forex/macro bot
+            await fetch_and_post_crypto(crypto_bot) # crypto bot only
         except Exception as e:
             logging.exception("❌ Fatal error in main loop.")
         logging.info("⏳ Sleeping 60 seconds...\n")
