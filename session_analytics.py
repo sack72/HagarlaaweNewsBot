@@ -62,3 +62,76 @@ def save_news_item(
         conn.commit()
     finally:
         conn.close()
+from statistics import mean
+from collections import defaultdict
+
+def label_to_score(label: str) -> int:
+    """Convert Bullish/Bearish/Neutral into numeric score."""
+    label = label.lower()
+    if label == "bullish":
+        return 1
+    if label == "bearish":
+        return -1
+    return 0  # Neutral
+
+def score_to_label(score: float) -> str:
+    """Convert numeric score back to a label."""
+    if score > 0.25:
+        return "Bullish"
+    if score < -0.25:
+        return "Bearish"
+    return "Neutral"
+
+def load_today_news_items() -> list[dict]:
+    """Fetch all saved news for the current UTC day from the database."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute("""
+            SELECT timestamp_utc, session, currency, sentiment_label, confidence, raw_text
+            FROM news_items
+        """).fetchall()
+    finally:
+        conn.close()
+
+    items = []
+    today = datetime.utcnow().date()
+
+    for ts, session, currency, sentiment, confidence, raw_text in rows:
+        dt = datetime.fromisoformat(ts)
+        if dt.date() == today:
+            items.append({
+                "timestamp": dt,
+                "session": session,
+                "currency": currency,
+                "sentiment_label": sentiment,
+                "confidence": float(confidence),
+                "raw_text": raw_text,
+            })
+    return items
+
+def aggregate_session_sentiment():
+    """Return aggregated sentiment per session and currency."""
+    news_items = load_today_news_items()
+
+    buckets = defaultdict(list)
+
+    for item in news_items:
+        key = (item["session"], item["currency"])
+        numeric_score = label_to_score(item["sentiment_label"])
+        weighted = numeric_score * item["confidence"]
+        buckets[key].append(weighted)
+
+    result = []
+
+    for (session, currency), scores in buckets.items():
+        avg_score = mean(scores)
+        label = score_to_label(avg_score)
+
+        result.append({
+            "session": session,
+            "currency": currency,
+            "sentiment_score": round(avg_score, 2),
+            "sentiment_label": label,
+        })
+
+    return result
