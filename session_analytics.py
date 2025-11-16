@@ -3,8 +3,19 @@
 from datetime import datetime, time
 import sqlite3
 from pathlib import Path
+from statistics import mean
+from collections import defaultdict
+from openai import OpenAI
+import json
+import os
 
+# Use persistent shared folder on Render
 DB_PATH = Path("/bot-data/news_sentiment.db")
+
+
+###############################################################################
+# 1. Database Setup
+###############################################################################
 
 def _get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -21,6 +32,11 @@ def _get_db_connection():
     """)
     return conn
 
+
+###############################################################################
+# 2. Session Mapping
+###############################################################################
+
 def get_session(dt_utc: datetime) -> str:
     """Map UTC time to trading session."""
     t = dt_utc.time()
@@ -30,6 +46,11 @@ def get_session(dt_utc: datetime) -> str:
         return "London"
     return "New York"
 
+
+###############################################################################
+# 3. Save Incoming News Item
+###############################################################################
+
 def save_news_item(
     currency: str,
     sentiment_label: str,
@@ -37,9 +58,7 @@ def save_news_item(
     raw_text: str,
     timestamp_utc: datetime | None = None,
 ):
-    """
-    Save one news item to the local SQLite database.
-    """
+    """Save one news item to database."""
 
     if timestamp_utc is None:
         timestamp_utc = datetime.utcnow()
@@ -62,28 +81,14 @@ def save_news_item(
         conn.commit()
     finally:
         conn.close()
-from statistics import mean
-from collections import defaultdict
 
-def label_to_score(label: str) -> int:
-    """Convert Bullish/Bearish/Neutral into numeric score."""
-    label = label.lower()
-    if label == "bullish":
-        return 1
-    if label == "bearish":
-        return -1
-    return 0  # Neutral
 
-def score_to_label(score: float) -> str:
-    """Convert numeric score back to a label."""
-    if score > 0.25:
-        return "Bullish"
-    if score < -0.25:
-        return "Bearish"
-    return "Neutral"
+###############################################################################
+# 4. Load Today's News
+###############################################################################
 
 def load_today_news_items() -> list[dict]:
-    """Fetch all saved news for the current UTC day from the database."""
+    """Fetch all saved news for the current UTC day."""
     conn = sqlite3.connect(DB_PATH)
     try:
         rows = conn.execute("""
@@ -109,16 +114,43 @@ def load_today_news_items() -> list[dict]:
             })
     return items
 
+
+###############################################################################
+# 5. Sentiment Scoring
+###############################################################################
+
+def label_to_score(label: str) -> int:
+    """Convert Bullish/Bearish/Neutral to numeric."""
+    label = label.lower()
+    if label == "bullish":
+        return 1
+    if label == "bearish":
+        return -1
+    return 0  # neutral
+
+
+def score_to_label(score: float) -> str:
+    """Convert numeric score to label with thresholds."""
+    if score > 0.25:
+        return "Bullish"
+    if score < -0.25:
+        return "Bearish"
+    return "Neutral"
+
+
+###############################################################################
+# 6. Aggregate Session Sentiment
+###############################################################################
+
 def aggregate_session_sentiment():
     """Return aggregated sentiment per session and currency."""
     news_items = load_today_news_items()
-
     buckets = defaultdict(list)
 
     for item in news_items:
         key = (item["session"], item["currency"])
-        numeric_score = label_to_score(item["sentiment_label"])
-        weighted = numeric_score * item["confidence"]
+        numeric = label_to_score(item["sentiment_label"])
+        weighted = numeric * item["confidence"]
         buckets[key].append(weighted)
 
     result = []
@@ -135,42 +167,49 @@ def aggregate_session_sentiment():
         })
 
     return result
-import json
-from openai import OpenAI   # Sync client
-import os
+
+
+###############################################################################
+# 7. AI Somali Session Summary
+###############################################################################
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 def generate_somali_session_summary() -> str:
     """
-    Uses AI to generate a MarketEdge-style Somali summary
-    based on today's session sentiment.
+    Produce a MarketEdge-style Somali dashboard summary.
     """
     data = aggregate_session_sentiment()
+
+    # Prevent crash when no data exists (weekends or no posts yet)
+    if not data:
+        return "Ma jiraan xog kulamo maanta oo la falanqeeyo. Sug marka wararka suuqa ay bilaabmaan."
+
+    # Prevent crash if Web Service has no OpenAI key
+    if not OPENAI_API_KEY:
+        return "API Error: OPENAI_API_KEY lama helin. Ku dar API-ga Web Service-ka Render."
+
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     system_prompt = """
     You are Hagarlaawe HMM's professional macro and FX analyst.
-    Produce a clean, structured dashboard summary in Somali.
-    
+    Produce a clean, structured session-dashboard summary in Somali.
+
     Format:
     1) Tokyo Session
-       - USD: Bullish/Neutral/Bearish (score)
+       - USD: (label + score)
        - JPY: ...
-       Macro comment: 1–2 lines
-    
+       Macro: 1–2 lines
+
     2) London Session
-       ...
-
     3) New York Session
-       ...
 
-    Overall:
-       - Risk sentiment (Risk-On / Risk-Off / Mixed)
-       - Market tone (USD strong? EUR weak?)
-       - Volatility level (Low / Medium / High)
+    Then give:
+    - Overall Risk sentiment (Risk-On / Risk-Off / Mixed)
+    - Market tone (strongest / weakest currencies)
+    - Volatility level (Low / Medium / High)
 
-    Writing style:
+    Style:
     - Professional Somali
     - Clear and concise
     - Deep but not long
@@ -178,10 +217,10 @@ def generate_somali_session_summary() -> str:
     """
 
     user_prompt = f"""
-    Here is today's session sentiment data (JSON):
+    Here is today's aggregated session sentiment in JSON:
     {json.dumps(data, indent=2)}
 
-    Generate the Somali dashboard now.
+    Generate the Somali session dashboard now.
     """
 
     resp = client.chat.completions.create(
