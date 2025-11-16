@@ -4,7 +4,7 @@ from datetime import datetime, time
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path("news_sentiment.db")
+DB_PATH = Path("/bot-data/news_sentiment.db")
 
 def _get_db_connection():
     conn = sqlite3.connect(DB_PATH)
