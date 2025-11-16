@@ -8,25 +8,25 @@ from telegram import Bot
 from openai import AsyncOpenAI
 import httpx
 import sys
-from typing import Optional, List, Dict, Any
+from typing import Optional, Any
+
+# ✅ NEW: add session analytics import
+from session_analytics import save_news_item
 
 ###############################################################################
 # 1. Environment & Setup
 ###############################################################################
 TELEGRAM_BOT_TOKEN           = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID          = os.getenv("TELEGRAM_CHANNEL_ID")          # HMM News (Forex / Macro)
-TELEGRAM_CRYPTO_CHANNEL_ID   = os.getenv("TELEGRAM_CRYPTO_CHANNEL_ID")   # Crypto-only channel
+TELEGRAM_CHANNEL_ID          = os.getenv("TELEGRAM_CHANNEL_ID")          
+OPENAI_API_KEY               = os.getenv("OPENAI_API_KEY")
 
-RSS_URLS_RAW        = os.getenv("RTT_RSS_FEED_URL", "")
-CRYPTO_RSS_FEEDS_RAW = os.getenv("CRYPTO_RSS_FEEDS", "")
-OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
+RSS_URLS_RAW  = os.getenv("RTT_RSS_FEED_URL", "")
 
 if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, OPENAI_API_KEY]):
     logging.error("Missing required environment variables.")
     sys.exit(1)
 
 RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
-CRYPTO_RSS_FEEDS = [u.strip() for u in CRYPTO_RSS_FEEDS_RAW.split(",") if u.strip()]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -34,9 +34,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # 2. Persistent Storage
 ###############################################################################
 PERSISTENT_STORAGE_PATH = "/bot-data"
-BRAND_IMAGE_PATH = os.path.join(PERSISTENT_STORAGE_PATH, "hmm_brand.jpg")
+BRAND_IMAGE_PATH        = os.path.join(PERSISTENT_STORAGE_PATH, "hmm_brand.jpg")
 
-LAST_LINK_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
+LAST_LINK_FILE          = os.path.join(PERSISTENT_STORAGE_PATH, "last_posted_link.txt")
 LAST_PUBLISHED_TIME_FILE = os.path.join(PERSISTENT_STORAGE_PATH, "last_published_time.txt")
 
 def load_last_posted_link() -> Optional[str]:
@@ -106,7 +106,7 @@ async def translate_to_somali(text: str) -> str:
             step1 = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "Translate this financial or crypto news into Somali clearly and accurately."},
+                    {"role": "system", "content": "Translate this financial news into Somali clearly and accurately."},
                     {"role": "user", "content": text}
                 ],
                 temperature=0.2,
@@ -117,7 +117,7 @@ async def translate_to_somali(text: str) -> str:
             step2 = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "Rewrite in professional Somali financial-news style, concise and clear."},
+                    {"role": "system", "content": "Rewrite in professional Somali financial-news style."},
                     {"role": "user", "content": first_pass}
                 ],
                 temperature=0.3,
@@ -131,15 +131,9 @@ async def translate_to_somali(text: str) -> str:
         return ""
 
 ###############################################################################
-# 4. Sentiment (Tone + Horizon + Confidence)
+# 4. Sentiment Analysis
 ###############################################################################
-async def analyze_sentiment(text: str) -> tuple[str, str, int]:
-    """
-    Returns (tone, horizon, confidence)
-    tone ∈ {Bullish, Bearish, Neutral}
-    horizon ∈ {Intraday, Short-term, Medium-term, Macro}
-    confidence ∈ [0,100]
-    """
+async def analyze_sentiment(text: str):
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
@@ -150,12 +144,8 @@ async def analyze_sentiment(text: str) -> tuple[str, str, int]:
                         "role": "system",
                         "content": (
                             "You are a conservative financial-markets analyst. "
-                            "For the given headline, determine:\n"
-                            "1) Tone: Bullish, Bearish, or Neutral.\n"
-                            "2) Horizon: Intraday (1-4h), Short-term (1-3 days), Medium-term (1 week), or Macro (1 month+).\n"
-                            "3) Confidence: integer 0-100.\n"
-                            "Output strictly: 'Tone: X; Horizon: Y; Confidence: Z'"
-                        ),
+                            "Return: Tone, Horizon, Confidence."
+                        )
                     },
                     {"role": "user", "content": text},
                 ],
@@ -163,8 +153,7 @@ async def analyze_sentiment(text: str) -> tuple[str, str, int]:
                 max_tokens=25,
             )
             out = resp.choices[0].message.content.strip()
-    except Exception as e:
-        logging.error(f"Sentiment analysis failed: {e}")
+    except:
         return ("Neutral", "Unknown", 50)
 
     tone_match = re.search(r"(Bullish|Bearish|Neutral)", out, re.IGNORECASE)
@@ -173,22 +162,18 @@ async def analyze_sentiment(text: str) -> tuple[str, str, int]:
 
     tone = tone_match.group(1).capitalize() if tone_match else "Neutral"
     horizon = horizon_match.group(1).capitalize() if horizon_match else "Unknown"
-    try:
-        conf = int(conf_match.group(1)) if conf_match else 50
-    except:
-        conf = 50
+    conf = int(conf_match.group(1)) if conf_match else 50
     conf = max(0, min(100, conf))
     return (tone, horizon, conf)
 
 ###############################################################################
-# 5. Filters & Cleaning (Main HMM Forex/Macro)
+# 5. Filtering
 ###############################################################################
 TARGET_FOREX_NEWS = {
     "USD": "🇺🇸", "EUR": "🇪🇺", "JPY": "🇯🇵", "GBP": "🇬🇧",
     "CAD": "🇨🇦", "CHF": "🇨🇭", "AUD": "🇦🇺", "NZD": "🇳🇿",
     "United States": "🇺🇸", "US": "🇺🇸",
-    "Europe": "🇪🇺", "Japan": "🇯🇵", "UK": "🇬🇧",
-    "Canada": "🇨🇦", "Swiss": "🇨🇭", "Australia": "🇦🇺", "New Zealand": "🇳🇿"
+    "Europe": "🇪🇺", "Japan": "🇯🇵", "UK": "🇬🇧"
 }
 
 EXCLUSION_KEYWORDS = [
@@ -204,9 +189,7 @@ def should_exclude_headline(title: str) -> bool:
     return False
 
 def clean_title(t: str) -> str:
-    # remove flag emojis
     t = re.sub(r"[\U0001F1E6-\U0001F1FF]{2}:?\s*", "", t)
-    # remove feed prefix like "FinancialJuice:"
     t = re.sub(r"^[^:]+:\s*", "", t).strip()
     return t
 
@@ -215,13 +198,11 @@ IMPORTANT_KEYWORDS = [
     "Powell", "Fed", "Federal Reserve", "FOMC",
     "Yellen", "Treasury Secretary",
     "ECB", "Lagarde", "Bank of Japan", "BOJ",
-    "RBA", "Philip Lowe", "RBNZ", "BOE", "Andrew Bailey",
-    "SNB", "Jordan", "Bank of Canada", "BoC", "Tiff Macklem",
-    "China PBOC", "PBoC", "Xi Jinping", "Beijing policy"
+    "RBA", "RBNZ", "BOE", "Bank of Canada", "BoC"
 ]
 
 ###############################################################################
-# 6. Facebook Posting (main HMM only)
+# 6. Facebook Posting
 ###############################################################################
 async def post_to_facebook(message: str) -> None:
     page_token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN")
@@ -232,6 +213,7 @@ async def post_to_facebook(message: str) -> None:
     hashtags = "\n\n#HagarlaaweHMM #WararkaFx #Forexsomali #Dhaqaalaha #Maaliyadda"
     fb_url = f"https://graph.facebook.com/{page_id}/feed"
     data = {"message": message + hashtags, "access_token": page_token}
+
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(fb_url, data=data)
@@ -243,7 +225,7 @@ async def post_to_facebook(message: str) -> None:
         logging.error(f"Facebook error: {e}")
 
 ###############################################################################
-# 7. Main HMM: Fetch & Post Forex/Macro Headlines
+# 7. Main Forex/Macro Bot
 ###############################################################################
 async def fetch_and_post_headlines(bot: Bot):
     last_link = load_last_posted_link()
@@ -253,14 +235,12 @@ async def fetch_and_post_headlines(bot: Bot):
     for url in RSS_URLS:
         logging.info(f"🔄 Fetching feed: {url}")
         feed = feedparser.parse(url)
-        logging.info(f"✅ Found {len(feed.entries)} entries")
 
         for e in feed.entries:
             link = e.get("link")
             pub = e.get("published_parsed")
 
             if link == last_link:
-                logging.info("⛔ Reached last posted link. Stopping scan for this feed.")
                 break
             if pub and time.mktime(pub) <= last_time:
                 continue
@@ -269,32 +249,31 @@ async def fetch_and_post_headlines(bot: Bot):
     new_items.sort(key=lambda x: x.get("published_parsed") or time.gmtime())
 
     if not new_items:
-        logging.info("📭 No new forex/macro items.")
+        logging.info("📭 No new items.")
         return
 
     latest_timestamp = last_time
 
     for e in new_items:
         raw = e.title or ""
-        logging.info(f"📰 Found headline: {raw}")
 
         if should_exclude_headline(raw):
             continue
 
-        # Country flag detection
+        # Country detection
         flag = None
+        currency = None
         for c, f in TARGET_FOREX_NEWS.items():
             if re.search(r"\b" + re.escape(c) + r"\b", raw, re.IGNORECASE):
                 flag = f
+                currency = c
                 break
 
-        # Macro-important headlines without clear FX country
         if not flag:
             if any(re.search(r"\b" + re.escape(k) + r"\b", raw, re.IGNORECASE) for k in IMPORTANT_KEYWORDS):
-                logging.info(f"🏛️ Important macro headline detected: {raw}")
                 flag = "🇺🇸"
+                currency = "USD"
             else:
-                logging.info(f"❎ No target currency or macro keyword found in: {raw}")
                 continue
 
         title = clean_title(raw)
@@ -306,30 +285,30 @@ async def fetch_and_post_headlines(bot: Bot):
         analysis_line = f"({tone} — {horizon} — Confidence: {conf}%)"
         message = f"{flag} {somali}\n\n{analysis_line}"
 
-        logging.info(f"📤 Posting to HMM News: {message[:80]}...")
-
+        # Post to Telegram
         try:
-            # Telegram main channel (with optional brand image)
-            if os.path.exists(BRAND_IMAGE_PATH):
-                with open(BRAND_IMAGE_PATH, "rb") as photo:
-                    await bot.send_photo(
-                        chat_id=TELEGRAM_CHANNEL_ID,
-                        photo=photo,
-                        caption=message,
-                        parse_mode="Markdown",
-                    )
-                logging.info("✅ Posted to HMM with brand image.")
-            else:
-                await bot.send_message(
-                    chat_id=TELEGRAM_CHANNEL_ID,
-                    text=message,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True,
-                )
-                logging.info("✅ Posted to HMM without image.")
+            await bot.send_message(
+                chat_id=TELEGRAM_CHANNEL_ID,
+                text=message,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+            logging.info("✅ Posted to Telegram.")
 
-            # Cross-post to Facebook (main news only)
+            # Post to Facebook
             await post_to_facebook(message)
+
+            # -----------------------------------------
+            # ✅ NEW: save the sentiment for analytics
+            # -----------------------------------------
+            confidence_decimal = conf / 100.0
+            save_news_item(
+                currency=currency,
+                sentiment_label=tone,
+                confidence=confidence_decimal,
+                raw_text=message,
+            )
+            logging.info("🧩 Saved to analytics DB.")
 
             if e.get("link"):
                 save_last_posted_link(e.get("link"))
@@ -337,7 +316,7 @@ async def fetch_and_post_headlines(bot: Bot):
                 latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
 
         except Exception as err:
-            logging.error(f"❌ Telegram HMM send failed: {err}")
+            logging.error(f"❌ Send failed: {err}")
 
         await asyncio.sleep(1)
 
@@ -345,63 +324,17 @@ async def fetch_and_post_headlines(bot: Bot):
         save_last_published_time(latest_timestamp)
 
 ###############################################################################
-# 8. Crypto: Fetch & Post to Crypto Channel Only
-###############################################################################
-CRYPTO_KEYWORDS = [
-    "bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain",
-    "solana", "xrp", "bnb", "doge", "cardano", "ada", "polkadot"
-]
-
-async def fetch_and_post_crypto(bot: Bot):
-    if not TELEGRAM_CRYPTO_CHANNEL_ID or not CRYPTO_RSS_FEEDS:
-        logging.info("⚠️ Crypto channel or feeds not configured. Skipping crypto.")
-        return
-
-    for url in CRYPTO_RSS_FEEDS:
-        logging.info(f"🔄 Fetching crypto feed: {url}")
-        feed = feedparser.parse(url)
-
-        for e in feed.entries[:15]:
-            title = e.title or ""
-            if not any(k in title.lower() for k in CRYPTO_KEYWORDS):
-                continue
-
-            logging.info(f"🪙 Found crypto headline: {title}")
-            somali = await translate_to_somali(title)
-            if not somali:
-                continue
-
-            tone, horizon, conf = await analyze_sentiment(title)
-            message = f"🪙 {somali}\n\n({tone} — {horizon} — Confidence: {conf}%)"
-
-            try:
-                await bot.send_message(
-                    chat_id=TELEGRAM_CRYPTO_CHANNEL_ID,
-                    text=message,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True,
-                )
-                logging.info(f"✅ Crypto posted: {title[:60]}...")
-            except Exception as err:
-                logging.error(f"❌ Crypto send failed: {err}")
-
-            await asyncio.sleep(2)
-
-###############################################################################
-# 9. Main Runner
+# 8. Main Runner
 ###############################################################################
 async def main():
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)  # HMM bot
-    CRYPTO_BOT_TOKEN = os.getenv("TELEGRAM_CRYPTO_TOKEN")
-    crypto_bot = Bot(token=CRYPTO_BOT_TOKEN)  # separate crypto bot
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
     while True:
         logging.info("♻️ Checking for new headlines...")
         try:
-            await fetch_and_post_headlines(bot)     # main forex/macro bot
-            await fetch_and_post_crypto(crypto_bot) # crypto bot only
-        except Exception as e:
-            logging.exception("❌ Fatal error in main loop.")
+            await fetch_and_post_headlines(bot)
+        except Exception:
+            logging.exception("❌ Fatal error.")
         logging.info("⏳ Sleeping 60 seconds...\n")
         await asyncio.sleep(60)
 
