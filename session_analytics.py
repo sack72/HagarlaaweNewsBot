@@ -135,3 +135,63 @@ def aggregate_session_sentiment():
         })
 
     return result
+import json
+from openai import OpenAI   # Sync client
+import os
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+def generate_somali_session_summary() -> str:
+    """
+    Uses AI to generate a MarketEdge-style Somali summary
+    based on today's session sentiment.
+    """
+    data = aggregate_session_sentiment()
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    system_prompt = """
+    You are Hagarlaawe HMM's professional macro and FX analyst.
+    Produce a clean, structured dashboard summary in Somali.
+    
+    Format:
+    1) Tokyo Session
+       - USD: Bullish/Neutral/Bearish (score)
+       - JPY: ...
+       Macro comment: 1–2 lines
+    
+    2) London Session
+       ...
+
+    3) New York Session
+       ...
+
+    Overall:
+       - Risk sentiment (Risk-On / Risk-Off / Mixed)
+       - Market tone (USD strong? EUR weak?)
+       - Volatility level (Low / Medium / High)
+
+    Writing style:
+    - Professional Somali
+    - Clear and concise
+    - Deep but not long
+    - Use “Madaxweyne Donald Trump” when referring to Trump
+    """
+
+    user_prompt = f"""
+    Here is today's session sentiment data (JSON):
+    {json.dumps(data, indent=2)}
+
+    Generate the Somali dashboard now.
+    """
+
+    resp = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=0.3,
+        max_tokens=400,
+    )
+
+    return resp.choices[0].message.content.strip()
