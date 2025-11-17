@@ -10,6 +10,9 @@ import httpx
 import sys
 from typing import Optional, Any
 
+# Import the full glossary
+from glossary import GLOSSARY
+
 ###############################################################################
 # 1. Environment & Setup
 ###############################################################################
@@ -17,6 +20,9 @@ TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 RSS_URLS_RAW        = os.getenv("RTT_RSS_FEED_URL", "")
+
+FACEBOOK_PAGE_ACCESS_TOKEN = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN")
+FACEBOOK_PAGE_ID           = os.getenv("FACEBOOK_PAGE_ID")
 
 if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, OPENAI_API_KEY]):
     logging.error("Missing required environment variables.")
@@ -55,7 +61,7 @@ def load_last_time() -> float:
         try:
             with open(LAST_TIME_FILE, "r") as f:
                 return float(f.read().strip())
-        except:
+        except Exception:
             return 0.0
     return 0.0
 
@@ -64,193 +70,21 @@ def save_last_time(timestamp: float) -> None:
     with open(LAST_TIME_FILE, "w") as f:
         f.write(str(timestamp))
 
-GLOSSARY = {
-
-    # ---------------------------------------------------------
-    # CENTRAL BANKS & POLICY
-    # ---------------------------------------------------------
-    "federal funds rate": "heerka dulsaar ee fed-ka",
-    "fed rate": "heerka dulsaar ee fed-ka",
-    "ecb": "bangiga dhexe ee yurub",
-    "european central bank": "bangiga dhexe ee yurub",
-    "boe": "bangiga ingiriiska",
-    "bank of england": "bangiga ingiriiska",
-    "boj": "bangiga japan",
-    "bank of japan": "bangiga japan",
-    "monetary policy": "siyaasadda lacagta",
-    "policy tightening": "adkeynta siyaasadda lacagta",
-    "policy easing": "fududeynta siyaasadda lacagta",
-    "interest rate decision": "go’aanka heerka dulsaar",
-    "forward guidance": "tilmaanta siyaasadda mustaqbalka",
-    "quantitative easing": "kordhinta lacagta wareegaysa (QE)",
-    "qe": "kordhinta lacagta wareegaysa (QE)",
-    "balance sheet reduction": "yaraynta miisaaniyadda (QT)",
-    "balance sheet expansion": "ballaarinta miisaaniyadda",
-    "liquidity injection": "gelinta lacagta dareeraha ah",
-    "overnight rate": "heerka dulsaar ee habeenka",
-    "dot plot": "jadwalka saadaasha fed-ka",
-    "fomc": "guddiga suuqa furan ee fed-ka",
-
-    # ---------------------------------------------------------
-    # MACRO DATA: OUTPUT, SURVEYS & HOUSING
-    # ---------------------------------------------------------
-    "gdp": "wax-soo-saarka guud ee dalka (GDP)",
-    "gdp growth rate": "heerka kobaca gdp-ga",
-    "industrial production": "wax-soo-saarka warshadaha",
-    "pmi": "tusmada maareeyayaasha iibsiga (PMI)",
-    "ism": "tusmada ISM ee warshadaha/adeegyada",
-    "ism manufacturing": "tusmada ism ee warshadaha",
-    "ism non-manufacturing": "tusmada ism ee adeegyada",
-    "durable goods orders": "amarada alaabta waara",
-    "business confidence": "tusmada kalsoonida ganacsiga",
-    "new home sales": "iibka guryaha cusub",
-    "housing starts": "dhismaha guryaha la bilaabay",
-    "building permits": "ogolaanshaha dhismaha",
-
-    # ---------------------------------------------------------
-    # INFLATION & PRICE INDEXES
-    # ---------------------------------------------------------
-    "inflation": "sicir-bararka",
-    "inflation rate": "heerka sicir-bararka",
-    "deflation": "sicir-hoos-u-dhac",
-    "cpi": "tusmada qiimaha macaamiisha (CPI)",
-    "consumer price index": "tusmada qiimaha macaamiisha (CPI)",
-    "core cpi": "cpi-ga asaaska ah",
-    "ppi": "tusmada qiimaha soo-saareyaasha (PPI)",
-    "producer price index": "tusmada qiimaha soo-saareyaasha (PPI)",
-    "pce": "tusmada kharashaadka macaamiisha (PCE)",
-    "core pce": "pce-ga asaaska ah",
-
-    # ---------------------------------------------------------
-    # LABOR MARKET & WAGES
-    # ---------------------------------------------------------
-    "nfp": "shaqooyinka aan beeraha ahayn (NFP)",
-    "non-farm payrolls": "shaqooyinka aan beeraha ahayn (NFP)",
-    "unemployment rate": "heerka shaqo-la’aanta",
-    "initial jobless claims": "codsiyada shaqo-la’aanta ee ugu horreeya",
-    "jobless claims": "codsiyada shaqo-la’aanta",
-    "average hourly earnings": "dakhliga celceliska saacaddiiba",
-    "labor force participation rate": "heerka ka-qaybgalka shaqaalaha",
-
-    # ---------------------------------------------------------
-    # SPENDING, INCOME & SENTIMENT
-    # ---------------------------------------------------------
-    "retail sales": "iibka tafaariiqda",
-    "consumer confidence": "tusmada kalsoonida macaamiisha",
-    "consumer sentiment": "tusmada dareenka macaamiisha",
-    "consumer confidence index": "tusmada kalsoonida macaamiisha (CCI)",
-    "personal income": "dakhliga shakhsiya",
-    "personal spending": "kharashaadka shakhsiya",
-
-    # ---------------------------------------------------------
-    # TRADE & INTERNATIONAL FINANCE
-    # ---------------------------------------------------------
-    "trade balance": "dheellitirka ganacsiga",
-    "balance of trade": "dheellitirka ganacsiga",
-    "current account": "koontada hadda",
-    "capital flows": "dhaqdhaqaaqa caasimadda",
-    "forex reserves": "kaydka lacagaha caalamiga ah",
-    "wti crude oil": "saliidda WTI",
-    "brent crude oil": "saliidda Brent",
-
-    # ---------------------------------------------------------
-    # BONDS, YIELDS & FIXED INCOME
-    # ---------------------------------------------------------
-    "treasury": "treasury-ga mareykanka",
-    "bond yields": "wax-soo-saarka bonds-ka",
-    "yield": "wax-soo-saarka bonds-ka",
-    "treasury yield": "yield-ka treasury-ga",
-    "10-year treasury yield": "yield-ka treasury-ga ee 10-sano",
-    "yield curve": "qalooca wax-soo-saarka",
-    "yield curve inversion": "rogmadka qalooca wax-soo-saarka",
-    "credit spread": "farqiga deymaha",
-    "corporate bonds": "bonds-ka shirkadaha",
-    "junk bonds": "bonds-ka halista badan",
-    "sovereign debt": "deynta dowladdu leedahay",
-    "auction demand": "baahida xaraashka",
-
-    # ---------------------------------------------------------
-    # MARKET SENTIMENT & VOLATILITY
-    # ---------------------------------------------------------
-    "market sentiment": "dareenka suuqa",
-    "risk sentiment": "jihada khatarta suuqa",
-    "volatility": "kacsanaanta suuqa",
-    "low volatility": "suuq deggan",
-    "high volatility": "suuq kacsan",
-    "selloff": "iib-sii kordhay (selloff)",
-    "rally": "kordh kac suuqa (rally)",
-    "correction": "dib-u-habeyn suuqa",
-    "bear market": "suuq hoos u socda (Bear)",
-    "bull market": "suuq kor u socda (Bull)",
-    "vix": "tusmada halisaha (VIX)",
-    "risk-off": "jaho khatar ka fogaansho (Risk-Off)",
-    "risk-on": "jaho khatar qaadasho (Risk-On)",
-    "basis point": "barta qiimeed (bp)",
-    "bp": "barta qiimeed (bp)",
-
-    # ---------------------------------------------------------
-    # EQUITIES & INDEXES
-    # ---------------------------------------------------------
-    "equity index": "tusmada saamiyada",
-    "stock index": "tusmada saamiyada",
-    "s&p 500": "tusmada saamiyada S&P 500",
-    "nasdaq": "suuqa saamiyada Nasdaq",
-    "dow jones": "tusmada Dow Jones",
-
-    # ---------------------------------------------------------
-    # FOREX MARKETS (FX)
-    # ---------------------------------------------------------
-    "usd": "doollar mareykanka",
-    "eur": "yuuro",
-    "jpy": "yen-ka japan",
-    "gbp": "gini ingiriis",
-    "chf": "faransiiska swiss-ka",
-    "cad": "doollar kanada",
-    "aud": "doollar australiya",
-    "nzd": "doollar new zealand",
-    "safe haven currency": "lacagta badbaadada lagu aado",
-    "currency depreciation": "hoos u dhaca qiimaha lacagta",
-    "currency appreciation": "kor u kaca qiimaha lacagta",
-    "fx intervention": "faragelinta suuqyada lacagaha",
-    "exchange rate": "heerka is-weydaarsiga",
-    "dollar strength": "awoodda doollarka",
-    "dollar weakness": "doollar daciif ah",
-    "carry trade": "ganacsiga dulsaar-ka-faa'iidada",
-
-    # ---------------------------------------------------------
-    # COMMODITIES & ENERGY
-    # ---------------------------------------------------------
-    "gold": "dahab",
-    "spot gold": "dahabka suuqa joogta ah",
-    "gold futures": "mustaqbalka dahabka",
-    "oil": "saliid",
-    "crude oil": "saliid cayriin",
-    "natural gas": "shidaalka dabiiciga ah",
-    "energy market": "suuqa tamarta",
-    "opec": "ururka dalalka saliidda",
-    "opec+": "opec+",
-    "oil output": "wax-soo-saarka saliidda",
-    "supply disruption": "carqalad ku timid sahayda",
-
-    # ---------------------------------------------------------
-    # DERIVATIVES & INSTRUMENTS
-    # ---------------------------------------------------------
-    "futures": "qandaraasyada mustaqbalka",
-    "options": "ikhtiyaarada ganacsiga (Options)",
-    "options contracts": "ikhtiyaarada ganacsiga",
-    "derivatives": "waxyaabaha laga soo farcamay suuqyada",
-    "leverage": "awood-dheereysi (leverage)",
-    "margin": "dhigaal (margin)",
-    "etf": "sanduuqa saamiyada la ganacsado (ETF)",
-    "index fund": "sanduuqa tusmada saamiyada",
-}
+###############################################################################
+# 3. Somali Glossary & Translation
+###############################################################################
 def apply_glossary(text: str) -> str:
+    """Replace key English financial terms with consistent Somali equivalents."""
     for eng, som in GLOSSARY.items():
         pattern = re.compile(r"\b" + re.escape(eng) + r"\b", re.IGNORECASE)
         text = pattern.sub(som, text)
     return text
 
 async def translate_to_somali(text: str) -> str:
+    """
+    Translate headline into professional Somali financial-news style.
+    Uses glossary afterwards to normalize technical terms.
+    """
     try:
         logging.info(f"Translating: {text}")
         async with httpx.AsyncClient() as http_client:
@@ -258,12 +92,24 @@ async def translate_to_somali(text: str) -> str:
             resp = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "Translate this into clear Somali financial-news style."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "Waxaad tahay weriye dhaqaale oo Somali ah. "
+                            "U turjun cinwaanka si kooban, cad oo xirfad leh, "
+                            "kana dhig qaab wararka maaliyadda. "
+                            "Marka aad tixraacayso Donald Trump isticmaal: "
+                            "\"Madaxweyne Donald Trump\"."
+                        ),
+                    },
                     {"role": "user", "content": text},
                 ],
                 temperature=0.2,
+                max_tokens=250,
             )
-            return apply_glossary(resp.choices[0].message.content.strip())
+            somali = resp.choices[0].message.content.strip()
+            somali = apply_glossary(somali)
+            return somali
     except Exception as e:
         logging.error(f"Translation failed: {e}")
         return ""
@@ -272,61 +118,126 @@ async def translate_to_somali(text: str) -> str:
 # 4. Sentiment
 ###############################################################################
 async def analyze_sentiment(text: str):
+    """
+    Returns: (Tone, Horizon, Confidence%)
+    Tone: Bullish/Bearish/Neutral
+    Horizon: Intraday/Short-term/Medium-term/Macro
+    Confidence: 0–100
+    """
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
             resp = await client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content":
-                     "Return Tone (Bullish/Bearish/Neutral), Horizon, Confidence %."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a conservative FX & macro analyst. "
+                            "For the given headline, return: "
+                            "Tone (Bullish/Bearish/Neutral), Horizon, Confidence (0-100). "
+                            "Format strictly as: Tone: X; Horizon: Y; Confidence: Z"
+                        ),
+                    },
                     {"role": "user", "content": text},
                 ],
                 temperature=0.0,
-                max_tokens=25,
+                max_tokens=32,
             )
             out = resp.choices[0].message.content.strip()
-    except:
+    except Exception as e:
+        logging.error(f"Sentiment analysis failed: {e}")
         return ("Neutral", "Unknown", 50)
 
-    tone  = re.search(r"(Bullish|Bearish|Neutral)", out, re.IGNORECASE)
-    horiz = re.search(r"(Intraday|Short-term|Medium-term|Macro)", out, re.IGNORECASE)
-    conf  = re.search(r"Confidence:\s*(\d+)", out)
+    tone_match  = re.search(r"(Bullish|Bearish|Neutral)", out, re.IGNORECASE)
+    horiz_match = re.search(r"(Intraday|Short-term|Medium-term|Macro)", out, re.IGNORECASE)
+    conf_match  = re.search(r"Confidence:\s*(\d+)", out)
 
-    tone  = tone.group(1).capitalize() if tone else "Neutral"
-    horiz = horiz.group(1).capitalize() if horiz else "Unknown"
-    conf  = int(conf.group(1)) if conf else 50
+    tone  = tone_match.group(1).capitalize() if tone_match else "Neutral"
+    horiz = horiz_match.group(1).capitalize() if horiz_match else "Unknown"
 
-    return (tone, horiz, max(0, min(conf, 100)))
+    try:
+        conf = int(conf_match.group(1)) if conf_match else 50
+    except Exception:
+        conf = 50
+    conf = max(0, min(conf, 100))
+
+    return (tone, horiz, conf)
 
 ###############################################################################
-# 5. High Impact Filtering (Powell only + Macro only)
+# 5. Facebook Posting
+###############################################################################
+async def post_to_facebook(message: str) -> None:
+    """Cross-post to Facebook page if credentials are present."""
+    if not FACEBOOK_PAGE_ACCESS_TOKEN or not FACEBOOK_PAGE_ID:
+        return
+
+    hashtags = "\n\n#HagarlaaweHMM #WararkaFx #Forexsomali #Dhaqaalaha #Maaliyadda"
+    fb_url = f"https://graph.facebook.com/{FACEBOOK_PAGE_ID}/feed"
+    data = {
+        "message": message + hashtags,
+        "access_token": FACEBOOK_PAGE_ACCESS_TOKEN,
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(fb_url, data=data)
+            if r.status_code == 200:
+                logging.info("✅ Posted to Facebook successfully.")
+            else:
+                logging.error(f"❌ Facebook post failed: {r.status_code} - {r.text}")
+    except Exception as e:
+        logging.error(f"Facebook error: {e}")
+
+###############################################################################
+# 6. Filtering (Powell-only, Macro-only, No noise)
 ###############################################################################
 
-# Tier-1 allowed voices: Powell only
+# Powell is the only Fed voice allowed
 POWELL_ONLY = [
     "jerome powell",
     "powell",
     "fed chair powell",
 ]
 
-# Block low-impact ECB/BOE/Fed members
+# Block low-impact ECB/BOE/EU/Fed speakers
 BLOCKED_SPEAKERS = [
-    "de guindos", "makhlouf", "sleijpen", "sliejpen", "merz",
+    "de guindos", "makhlouf", "sleijpen", "merz",
     "mann", "wells", "he lifeng",
     "jefferson", "harker", "barkin", "goolsbee", "mester",
     "logan", "cook", "daly", "collins", "barr", "kashkari",
 ]
 
-# High macro data
+# Block T-bill auctions (noise)
+BLOCKED_LOW_IMPACT_BOND = [
+    "3-month", "3 month",
+    "6-month", "6 month",
+    "t-bill", "tbill", "t bill",
+    "bill auction",
+    "treasury bill",
+    "bond auction",
+    "auction results",
+    "bid-to-cover",
+]
+
+# Block noisy sources by name
+BLOCKED_SOURCES = [
+    "financialjuice",
+    "financial juice",
+    "financialnews",
+    "financial news",
+]
+
+# Allow only true macro movers
 HIGH_IMPACT_MACRO = [
-    "cpi", "inflation", "pce", "core pce", "core cpi",
-    "nfp", "nonfarm", "unemployment", "jobless claims",
+    "cpi", "inflation", "pce", "core pce",
+    "core cpi", "nfp", "nonfarm", "unemployment",
     "gdp", "retail sales", "ppi",
     "pmi", "ism",
-    "yield", "yields", "treasury", "risk-off", "risk-on",
+    "yield", "treasury yield", "yields",
+    "risk-off", "risk on", "risk-on",
     "fomc", "fed policy", "federal reserve",
-    "market crash", "selloff", "volatility",
+    "market crash", "selloff", "sell-off", "volatility",
     "white house", "biden", "madaxweyne donald trump",
 ]
 
@@ -337,14 +248,20 @@ def contains(text: str, keywords: list[str]) -> bool:
 def is_powell(text: str) -> bool:
     return contains(text, POWELL_ONLY)
 
-def is_blocked(text: str) -> bool:
+def is_blocked_speaker(text: str) -> bool:
     return contains(text, BLOCKED_SPEAKERS)
+
+def is_low_impact_bond(text: str) -> bool:
+    return contains(text, BLOCKED_LOW_IMPACT_BOND)
+
+def is_blocked_source(text: str) -> bool:
+    return contains(text, BLOCKED_SOURCES)
 
 def is_high_macro(text: str) -> bool:
     return contains(text, HIGH_IMPACT_MACRO)
 
 ###############################################################################
-# 6. Posting Loop
+# 7. Fetch & Post Loop
 ###############################################################################
 async def fetch_and_post(bot: Bot):
     last_link = load_last_posted_link()
@@ -352,8 +269,9 @@ async def fetch_and_post(bot: Bot):
     new_items: list[Any] = []
 
     for url in RSS_URLS:
-        logging.info(f"Fetching feed: {url}")
+        logging.info(f"🔄 Fetching feed: {url}")
         feed = feedparser.parse(url)
+
         for e in feed.entries:
             link = e.get("link")
             pub  = e.get("published_parsed")
@@ -368,7 +286,7 @@ async def fetch_and_post(bot: Bot):
     new_items.sort(key=lambda x: x.get("published_parsed") or time.gmtime())
 
     if not new_items:
-        logging.info("No new items.")
+        logging.info("📭 No new items.")
         return
 
     latest_timestamp = last_time
@@ -377,39 +295,55 @@ async def fetch_and_post(bot: Bot):
         title = e.title or ""
         t = title.lower()
 
-        # ------------------------
-        # MASTER FILTER SYSTEM
-        # ------------------------
-        if is_blocked(t):
-            logging.info(f"❌ BLOCKED NOISE: {title}")
+        # 1) Block noisy sources
+        if is_blocked_source(t):
+            logging.info(f"❌ BLOCKED SOURCE: {title}")
             continue
 
+        # 2) Block low-impact bond auctions
+        if is_low_impact_bond(t):
+            logging.info(f"❌ BLOCKED T-BILL / AUCTION: {title}")
+            continue
+
+        # 3) Block low-impact ECB/BOE/Fed members
+        if is_blocked_speaker(t):
+            logging.info(f"❌ BLOCKED MINOR SPEAKER: {title}")
+            continue
+
+        # 4) If 'Fed' appears but not Powell → skip
         if "fed" in t and not is_powell(t):
-            logging.info(f"⛔ Skipping non-Powell Fed: {title}")
+            logging.info(f"⛔ Skipping non-Powell Fed headline: {title}")
             continue
 
+        # 5) Allow Powell always; otherwise require high-impact macro
         if not is_powell(t) and not is_high_macro(t):
             logging.info(f"⚠️ Low Impact Skipped: {title}")
             continue
 
         logging.info(f"🔥 Approved headline: {title}")
 
-        # Clean/translate/post
         som = await translate_to_somali(title)
-        tone, horiz, conf = await analyze_sentiment(title)
+        if not som:
+            continue
 
+        tone, horiz, conf = await analyze_sentiment(title)
         msg = f"{som}\n\n({tone} — {horiz} — Confidence: {conf}%)"
 
         try:
+            # Telegram
             await bot.send_message(
                 TELEGRAM_CHANNEL_ID,
                 msg,
                 parse_mode="Markdown",
-                disable_web_page_preview=True
+                disable_web_page_preview=True,
             )
-            logging.info("Posted to Telegram.")
+            logging.info("✅ Posted to Telegram.")
+
+            # Facebook
+            await post_to_facebook(msg)
+
         except Exception as err:
-            logging.error(f"❌ Telegram error: {err}")
+            logging.error(f"❌ Telegram/Facebook send error: {err}")
 
         if e.get("link"):
             save_last_posted_link(e.get("link"))
@@ -421,7 +355,7 @@ async def fetch_and_post(bot: Bot):
     save_last_time(latest_timestamp)
 
 ###############################################################################
-# 7. Main Loop
+# 8. Main Loop
 ###############################################################################
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -431,9 +365,8 @@ async def main():
         try:
             await fetch_and_post(bot)
         except Exception:
-            logging.exception("Fatal error in main loop.")
-
-        logging.info("Sleeping 60 seconds...\n")
+            logging.exception("❌ Fatal error in main loop.")
+        logging.info("⏳ Sleeping 60 seconds...\n")
         await asyncio.sleep(60)
 
 if __name__ == "__main__":
