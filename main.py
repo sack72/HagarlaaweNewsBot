@@ -1,3 +1,6 @@
+# NEW — session analytics imports
+from session_analytics import save_daily_json, generate_somali_session_summary
+
 import os
 import time
 import re
