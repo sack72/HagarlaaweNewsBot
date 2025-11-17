@@ -335,12 +335,33 @@ async def main():
     while True:
         logging.info("♻️ Checking for new headlines...")
         try:
+            # ------------------------------
+            # Fetch and post new headlines
+            # ------------------------------
             await fetch_and_post_headlines(bot)
+
+            # --------------------------------------------
+            # 🔄 NEW: Save updated sentiment JSON each cycle
+            # --------------------------------------------
+            try:
+                save_daily_json()
+                logging.info("💾 Saved daily sentiment JSON.")
+            except Exception as e:
+                logging.error(f"JSON save error: {e}")
+
+            # ----------------------------------------------------
+            # 🧠 NEW: Generate Somali Session Summary each cycle
+            # ----------------------------------------------------
+            try:
+                summary = generate_somali_session_summary()
+                with open("/bot-data/summary.txt", "w") as f:
+                    f.write(summary)
+                logging.info("📝 Somali session summary updated.")
+            except Exception as e:
+                logging.error(f"Summary generation error: {e}")
+
         except Exception:
-            logging.exception("❌ Fatal error.")
+            logging.exception("❌ Fatal error in main loop.")
+
         logging.info("⏳ Sleeping 60 seconds...\n")
         await asyncio.sleep(60)
-
-if __name__ == "__main__":
-    os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
-    asyncio.run(main())
