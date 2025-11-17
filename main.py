@@ -1,6 +1,15 @@
-# NEW — session analytics imports
-from session_analytics import save_daily_json, generate_somali_session_summary
+# -------------------------------------------------------------
+# Session analytics imports (fixed & combined)
+# -------------------------------------------------------------
+from session_analytics import (
+    save_news_item,
+    save_daily_json,
+    generate_somali_session_summary,
+)
 
+# -------------------------------------------------------------
+# Standard libraries & external dependencies
+# -------------------------------------------------------------
 import os
 import time
 import re
@@ -12,9 +21,6 @@ from openai import AsyncOpenAI
 import httpx
 import sys
 from typing import Optional, Any
-
-# ✅ NEW: add session analytics import
-from session_analytics import save_news_item
 
 ###############################################################################
 # 1. Environment & Setup
