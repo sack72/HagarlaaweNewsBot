@@ -234,3 +234,11 @@ def generate_somali_session_summary() -> str:
     )
 
     return resp.choices[0].message.content.strip()
+import json
+
+JSON_PATH = Path("/bot-data/today_sentiment.json")
+
+def save_daily_json():
+    data = aggregate_session_sentiment()
+    with open(JSON_PATH, "w") as f:
+        json.dump(data, f, indent=2)
