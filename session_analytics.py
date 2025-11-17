@@ -38,7 +38,6 @@ def _get_db_connection():
 ###############################################################################
 
 def get_session(dt_utc: datetime) -> str:
-    """Map UTC time to trading session."""
     t = dt_utc.time()
     if time(0, 0) <= t < time(8, 0):
         return "Tokyo"
@@ -58,8 +57,6 @@ def save_news_item(
     raw_text: str,
     timestamp_utc: datetime | None = None,
 ):
-    """Save one news item to database."""
-
     if timestamp_utc is None:
         timestamp_utc = datetime.utcnow()
 
@@ -88,7 +85,6 @@ def save_news_item(
 ###############################################################################
 
 def load_today_news_items() -> list[dict]:
-    """Fetch all saved news for the current UTC day."""
     conn = sqlite3.connect(DB_PATH)
     try:
         rows = conn.execute("""
@@ -120,17 +116,15 @@ def load_today_news_items() -> list[dict]:
 ###############################################################################
 
 def label_to_score(label: str) -> int:
-    """Convert Bullish/Bearish/Neutral to numeric."""
     label = label.lower()
     if label == "bullish":
         return 1
     if label == "bearish":
         return -1
-    return 0  # neutral
+    return 0
 
 
 def score_to_label(score: float) -> str:
-    """Convert numeric score to label with thresholds."""
     if score > 0.25:
         return "Bullish"
     if score < -0.25:
@@ -143,7 +137,6 @@ def score_to_label(score: float) -> str:
 ###############################################################################
 
 def aggregate_session_sentiment():
-    """Return aggregated sentiment per session and currency."""
     news_items = load_today_news_items()
     buckets = defaultdict(list)
 
@@ -176,51 +169,26 @@ def aggregate_session_sentiment():
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 def generate_somali_session_summary() -> str:
-    """
-    Produce a MarketEdge-style Somali dashboard summary.
-    """
     data = aggregate_session_sentiment()
 
-    # Prevent crash when no data exists (weekends or no posts yet)
     if not data:
         return "Ma jiraan xog kulamo maanta oo la falanqeeyo. Sug marka wararka suuqa ay bilaabmaan."
 
-    # Prevent crash if Web Service has no OpenAI key
     if not OPENAI_API_KEY:
-        return "API Error: OPENAI_API_KEY lama helin. Ku dar API-ga Web Service-ka Render."
+        return "API Error: OPENAI_API_KEY lama helin."
 
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     system_prompt = """
     You are Hagarlaawe HMM's professional macro and FX analyst.
-    Produce a clean, structured session-dashboard summary in Somali.
-
-    Format:
-    1) Tokyo Session
-       - USD: (label + score)
-       - JPY: ...
-       Macro: 1–2 lines
-
-    2) London Session
-    3) New York Session
-
-    Then give:
-    - Overall Risk sentiment (Risk-On / Risk-Off / Mixed)
-    - Market tone (strongest / weakest currencies)
-    - Volatility level (Low / Medium / High)
-
-    Style:
-    - Professional Somali
-    - Clear and concise
-    - Deep but not long
-    - Use “Madaxweyne Donald Trump” when referring to Trump
+    Produce a clean, structured dashboard summary in Somali.
     """
 
     user_prompt = f"""
-    Here is today's aggregated session sentiment in JSON:
+    Here is today's aggregated session sentiment (JSON):
     {json.dumps(data, indent=2)}
 
-    Generate the Somali session dashboard now.
+    Write the Somali session dashboard.
     """
 
     resp = client.chat.completions.create(
@@ -234,7 +202,11 @@ def generate_somali_session_summary() -> str:
     )
 
     return resp.choices[0].message.content.strip()
-import json
+
+
+###############################################################################
+# 8. Save Daily JSON
+###############################################################################
 
 JSON_PATH = Path("/bot-data/today_sentiment.json")
 
