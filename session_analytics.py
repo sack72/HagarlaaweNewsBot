@@ -5,11 +5,12 @@ import sqlite3
 from pathlib import Path
 from statistics import mean
 from collections import defaultdict
+from typing import Optional
 from openai import OpenAI
 import json
 import os
 
-# Use persistent shared folder on Render
+# DB path (inside worker container)
 DB_PATH = Path("/bot-data/news_sentiment.db")
 
 
@@ -19,7 +20,8 @@ DB_PATH = Path("/bot-data/news_sentiment.db")
 
 def _get_db_connection():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS news_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_utc TEXT NOT NULL,
@@ -29,7 +31,8 @@ def _get_db_connection():
             confidence REAL NOT NULL,
             raw_text TEXT NOT NULL
         )
-    """)
+        """
+    )
     return conn
 
 
@@ -38,6 +41,7 @@ def _get_db_connection():
 ###############################################################################
 
 def get_session(dt_utc: datetime) -> str:
+    """Map UTC time to trading session."""
     t = dt_utc.time()
     if time(0, 0) <= t < time(8, 0):
         return "Tokyo"
@@ -55,8 +59,9 @@ def save_news_item(
     sentiment_label: str,
     confidence: float,
     raw_text: str,
-    timestamp_utc: datetime | None = None,
+    timestamp_utc: Optional[datetime] = None,
 ):
+    """Save one news item to database."""
     if timestamp_utc is None:
         timestamp_utc = datetime.utcnow()
 
@@ -85,12 +90,15 @@ def save_news_item(
 ###############################################################################
 
 def load_today_news_items() -> list[dict]:
+    """Fetch all saved news for the current UTC day."""
     conn = sqlite3.connect(DB_PATH)
     try:
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT timestamp_utc, session, currency, sentiment_label, confidence, raw_text
             FROM news_items
-        """).fetchall()
+            """
+        ).fetchall()
     finally:
         conn.close()
 
@@ -100,14 +108,16 @@ def load_today_news_items() -> list[dict]:
     for ts, session, currency, sentiment, confidence, raw_text in rows:
         dt = datetime.fromisoformat(ts)
         if dt.date() == today:
-            items.append({
-                "timestamp": dt,
-                "session": session,
-                "currency": currency,
-                "sentiment_label": sentiment,
-                "confidence": float(confidence),
-                "raw_text": raw_text,
-            })
+            items.append(
+                {
+                    "timestamp": dt,
+                    "session": session,
+                    "currency": currency,
+                    "sentiment_label": sentiment,
+                    "confidence": float(confidence),
+                    "raw_text": raw_text,
+                }
+            )
     return items
 
 
@@ -116,15 +126,17 @@ def load_today_news_items() -> list[dict]:
 ###############################################################################
 
 def label_to_score(label: str) -> int:
+    """Convert Bullish/Bearish/Neutral to numeric."""
     label = label.lower()
     if label == "bullish":
         return 1
     if label == "bearish":
         return -1
-    return 0
+    return 0  # neutral
 
 
 def score_to_label(score: float) -> str:
+    """Convert numeric score to label with thresholds."""
     if score > 0.25:
         return "Bullish"
     if score < -0.25:
@@ -137,6 +149,7 @@ def score_to_label(score: float) -> str:
 ###############################################################################
 
 def aggregate_session_sentiment():
+    """Return aggregated sentiment per session and currency."""
     news_items = load_today_news_items()
     buckets = defaultdict(list)
 
@@ -152,12 +165,14 @@ def aggregate_session_sentiment():
         avg_score = mean(scores)
         label = score_to_label(avg_score)
 
-        result.append({
-            "session": session,
-            "currency": currency,
-            "sentiment_score": round(avg_score, 2),
-            "sentiment_label": label,
-        })
+        result.append(
+            {
+                "session": session,
+                "currency": currency,
+                "sentiment_score": round(avg_score, 2),
+                "sentiment_label": label,
+            }
+        )
 
     return result
 
@@ -169,33 +184,37 @@ def aggregate_session_sentiment():
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 def generate_somali_session_summary() -> str:
+    """
+    Produce a MarketEdge-style Somali dashboard summary.
+    """
     data = aggregate_session_sentiment()
 
+    # Prevent crash when no data exists
     if not data:
         return "Ma jiraan xog kulamo maanta oo la falanqeeyo. Sug marka wararka suuqa ay bilaabmaan."
 
+    # Prevent crash if key missing
     if not OPENAI_API_KEY:
         return "API Error: OPENAI_API_KEY lama helin."
 
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    system_prompt = """
-    You are Hagarlaawe HMM's professional macro and FX analyst.
-    Produce a clean, structured dashboard summary in Somali.
-    """
+    system_prompt = (
+        "You are Hagarlaawe HMM's professional macro and FX analyst. "
+        "Produce a clean, structured Somali session dashboard."
+    )
 
-    user_prompt = f"""
-    Here is today's aggregated session sentiment (JSON):
-    {json.dumps(data, indent=2)}
-
-    Write the Somali session dashboard.
-    """
+    user_prompt = (
+        "Here is today's aggregated session sentiment (JSON):\n"
+        f"{json.dumps(data, indent=2)}\n"
+        "Write the Somali session dashboard."
+    )
 
     resp = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user",  "content": user_prompt},
         ],
         temperature=0.3,
         max_tokens=400,
@@ -211,6 +230,7 @@ def generate_somali_session_summary() -> str:
 JSON_PATH = Path("/bot-data/today_sentiment.json")
 
 def save_daily_json():
+    """Save today's aggregated sentiment to JSON."""
     data = aggregate_session_sentiment()
     with open(JSON_PATH, "w") as f:
         json.dump(data, f, indent=2)
