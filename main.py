@@ -220,14 +220,6 @@ BLOCKED_LOW_IMPACT_BOND = [
     "bid-to-cover",
 ]
 
-# Block noisy sources by name
-BLOCKED_SOURCES = [
-    "financialjuice",
-    "financial juice",
-    "financialnews",
-    "financial news",
-]
-
 # Allow only true macro movers
 HIGH_IMPACT_MACRO = [
     "cpi", "inflation", "pce", "core pce",
@@ -254,11 +246,38 @@ def is_blocked_speaker(text: str) -> bool:
 def is_low_impact_bond(text: str) -> bool:
     return contains(text, BLOCKED_LOW_IMPACT_BOND)
 
-def is_blocked_source(text: str) -> bool:
-    return contains(text, BLOCKED_SOURCES)
-
 def is_high_macro(text: str) -> bool:
     return contains(text, HIGH_IMPACT_MACRO)
+
+###############################################################################
+# 6.1 Title Cleaning (remove source names like FinancialJuice:)
+###############################################################################
+def clean_title(t: str) -> str:
+    """
+    Removes feed prefixes like:
+    - FinancialJuice:
+    - Financial News:
+    - Bloomberg:
+    - Reuters:
+    - CNBC:
+    - FXStreet:
+    And also removes flag emojis at the start.
+    """
+    # Remove leading flags (🇺🇸, 🇬🇧, etc)
+    t = re.sub(r"^[\U0001F1E6-\U0001F1FF]{2}:?\s*", "", t)
+
+    # Remove common source prefixes (case-insensitive)
+    t = re.sub(
+        r"^(financial ?juice|financial ?news|bloomberg|reuters|cnbc|fxstreet|investing\.com)\s*:\s*",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+
+    # Generic: anything before first colon considered source → remove
+    t = re.sub(r"^[^:]+:\s*", "", t)
+
+    return t.strip()
 
 ###############################################################################
 # 7. Fetch & Post Loop
@@ -292,32 +311,28 @@ async def fetch_and_post(bot: Bot):
     latest_timestamp = last_time
 
     for e in new_items:
-        title = e.title or ""
+        raw_title = e.title or ""
+        title = clean_title(raw_title)
         t = title.lower()
 
-        # 1) Block noisy sources
-        if is_blocked_source(t):
-            logging.info(f"❌ BLOCKED SOURCE: {title}")
-            continue
-
-        # 2) Block low-impact bond auctions
+        # 1) Block low-impact bond auctions
         if is_low_impact_bond(t):
-            logging.info(f"❌ BLOCKED T-BILL / AUCTION: {title}")
+            logging.info(f"❌ BLOCKED T-BILL / AUCTION: {raw_title}")
             continue
 
-        # 3) Block low-impact ECB/BOE/Fed members
+        # 2) Block low-impact ECB/BOE/Fed members
         if is_blocked_speaker(t):
-            logging.info(f"❌ BLOCKED MINOR SPEAKER: {title}")
+            logging.info(f"❌ BLOCKED MINOR SPEAKER: {raw_title}")
             continue
 
-        # 4) If 'Fed' appears but not Powell → skip
+        # 3) If 'Fed' appears but not Powell → skip
         if "fed" in t and not is_powell(t):
-            logging.info(f"⛔ Skipping non-Powell Fed headline: {title}")
+            logging.info(f"⛔ Skipping non-Powell Fed headline: {raw_title}")
             continue
 
-        # 5) Allow Powell always; otherwise require high-impact macro
+        # 4) Allow Powell always; otherwise require high-impact macro
         if not is_powell(t) and not is_high_macro(t):
-            logging.info(f"⚠️ Low Impact Skipped: {title}")
+            logging.info(f"⚠️ Low Impact Skipped: {raw_title}")
             continue
 
         logging.info(f"🔥 Approved headline: {title}")
