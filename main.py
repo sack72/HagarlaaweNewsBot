@@ -14,6 +14,14 @@ from typing import Optional, List, Dict, Any
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+# --- IMPORT YOUR GLOSSARY ---
+# Make sure glossary.py is in the same folder in your GitHub repo!
+try:
+    from glossary import GLOSSARY
+except ImportError:
+    logging.error("❌ glossary.py not found! Make sure it is in your GitHub repo.")
+    sys.exit(1)
+
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -41,26 +49,19 @@ except Exception as e:
 ###############################################################################
 TELEGRAM_BOT_TOKEN           = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID          = os.getenv("TELEGRAM_CHANNEL_ID")          # HMM News
-TELEGRAM_CRYPTO_CHANNEL_ID   = os.getenv("TELEGRAM_CRYPTO_CHANNEL_ID")   # Crypto News
-TELEGRAM_CRYPTO_TOKEN        = os.getenv("TELEGRAM_CRYPTO_TOKEN")        # Crypto Bot Token
-
-RSS_URLS_RAW        = os.getenv("RTT_RSS_FEED_URL", "")
-CRYPTO_RSS_FEEDS_RAW = os.getenv("CRYPTO_RSS_FEEDS", "")
-OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
+RSS_URLS_RAW                 = os.getenv("RTT_RSS_FEED_URL", "")
+OPENAI_API_KEY               = os.getenv("OPENAI_API_KEY")
 
 if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, OPENAI_API_KEY]):
     logging.error("Missing required environment variables.")
     sys.exit(1)
 
 RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
-CRYPTO_RSS_FEEDS = [u.strip() for u in CRYPTO_RSS_FEEDS_RAW.split(",") if u.strip()]
 
 ###############################################################################
 # 3. Database State Management (Replaces Text Files)
 ###############################################################################
-# We store the bot's memory in Firestore so it survives Render restarts
-
-def get_bot_state(doc_name='main_config'):
+def get_bot_state(doc_name='forex_state'):
     """Retrieves last_link and last_time from Firestore"""
     try:
         doc = db.collection('bot_state').document(doc_name).get()
@@ -72,7 +73,7 @@ def get_bot_state(doc_name='main_config'):
         logging.error(f"⚠️ Error reading state from DB: {e}")
         return {"last_link": None, "last_time": 0.0}
 
-def save_bot_state(last_link, last_time, doc_name='main_config'):
+def save_bot_state(last_link, last_time, doc_name='forex_state'):
     """Saves current state to Firestore"""
     try:
         db.collection('bot_state').document(doc_name).set({
@@ -100,31 +101,10 @@ def save_news_to_dashboard(title, somali_text, tone, horizon, confidence, asset_
         logging.error(f"❌ Dashboard save error: {e}")
 
 ###############################################################################
-# 4. Glossary & Translation
+# 4. Translation with External Glossary
 ###############################################################################
-# Included inline to prevent "ModuleNotFound" errors on Render
-GLOSSARY = {
-    "futures": "qandaraasyada mustaqbalka",
-    "yields": "wax-soo-saarka bonds-ka",
-    "bond": "bond",
-    "rate cut": "hoos u dhigidda heerka dulsaarka",
-    "rate hike": "kor u qaadista heerka dulsaarka",
-    "inflation": "sicirka maciishadda",
-    "CPI": "CPI",
-    "core inflation": "sicir-bararka asaasiga ah",
-    "central bank": "bangiga dhexe",
-    "Federal Reserve": "Bangiga Dhexe ee Maraykanka",
-    "RBA": "Bangiga Dhexe ee Australiya",
-    "BOE": "Bangiga Ingiriiska",
-    "BOJ": "Bangiga Japan",
-    "ECB": "Bangiga Yurub",
-    "GDP": "wax-soo-saarka guud ee dalka",
-    "recession": "hoos u dhac dhaqaale",
-    "unemployment": "shaqo la'aan",
-    "employment": "shaqaalaysiinta"
-}
-
 def apply_glossary(text: str) -> str:
+    # Uses the imported GLOSSARY variable from glossary.py
     for eng, som in GLOSSARY.items():
         pattern = re.compile(r"\b" + re.escape(eng) + r"\b", re.IGNORECASE)
         text = pattern.sub(som, text)
@@ -132,14 +112,14 @@ def apply_glossary(text: str) -> str:
 
 async def translate_to_somali(text: str) -> str:
     try:
+        logging.info(f"📝 Translating: {text}")
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
 
-            # Two-step translation for higher quality (as per your original code)
             step1 = await client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "Translate this financial or crypto news into Somali clearly and accurately."},
+                    {"role": "system", "content": "Translate this financial news into Somali clearly and accurately."},
                     {"role": "user", "content": text}
                 ],
                 temperature=0.2,
@@ -156,6 +136,7 @@ async def translate_to_somali(text: str) -> str:
                 temperature=0.3,
                 max_tokens=300,
             )
+            # Apply the 400-word glossary here
             result = apply_glossary(step2.choices[0].message.content.strip())
             return result
     except Exception as e:
@@ -175,12 +156,8 @@ async def analyze_sentiment(text: str) -> tuple[str, str, int]:
                     {
                         "role": "system",
                         "content": (
-                            "You are a conservative financial-markets analyst. "
-                            "For the given headline, determine:\n"
-                            "1) Tone: Bullish, Bearish, or Neutral.\n"
-                            "2) Horizon: Intraday (1-4h), Short-term (1-3 days), Medium-term (1 week), or Macro (1 month+).\n"
-                            "3) Confidence: integer 0-100.\n"
-                            "Output strictly: 'Tone: X; Horizon: Y; Confidence: Z'"
+                            "Determine: 1) Tone (Bullish/Bearish/Neutral) 2) Horizon (Intraday/Short-term/Medium-term) 3) Confidence (0-100). "
+                            "Format strictly: 'Tone: X; Horizon: Y; Confidence: Z'"
                         ),
                     },
                     {"role": "user", "content": text},
@@ -196,14 +173,12 @@ async def analyze_sentiment(text: str) -> tuple[str, str, int]:
 
         tone = tone_match.group(1).capitalize() if tone_match else "Neutral"
         horizon = horizon_match.group(1).capitalize() if horizon_match else "Unknown"
-        
         try:
             conf = int(conf_match.group(1)) if conf_match else 50
         except:
             conf = 50
         conf = max(0, min(100, conf))
         return (tone, horizon, conf)
-
     except Exception as e:
         logging.error(f"Sentiment analysis failed: {e}")
         return ("Neutral", "Unknown", 50)
@@ -213,14 +188,19 @@ async def analyze_sentiment(text: str) -> tuple[str, str, int]:
 ###############################################################################
 TARGET_FOREX_NEWS = {
     "USD": "🇺🇸", "EUR": "🇪🇺", "JPY": "🇯🇵", "GBP": "🇬🇧",
-    "CAD": "🇨🇦", "CHF": "🇨🇭", "AUD": "🇦🇺", "NZD": "🇳🇿"
+    "CAD": "🇨🇦", "CHF": "🇨🇭", "AUD": "🇦🇺", "NZD": "🇳🇿",
+    "United States": "🇺🇸", "US": "🇺🇸",
+    "Europe": "🇪🇺", "Japan": "🇯🇵", "UK": "🇬🇧",
+    "Canada": "🇨🇦", "Swiss": "🇨🇭", "Australia": "🇦🇺", "New Zealand": "🇳🇿"
 }
 
 IMPORTANT_KEYWORDS = [
     "Trump", "Biden", "White House", "Election", "Republican", "Democrat",
     "Powell", "Fed", "Federal Reserve", "FOMC",
-    "Yellen", "Treasury Secretary", "ECB", "Lagarde", 
-    "BOJ", "RBA", "BOE", "China PBOC", "Xi Jinping", "GDP", "CPI"
+    "Yellen", "Treasury Secretary", "ECB", "Lagarde", "Bank of Japan",
+    "BOJ", "RBA", "Philip Lowe", "RBNZ", "BOE", "Andrew Bailey",
+    "SNB", "Jordan", "Bank of Canada", "BoC", "Tiff Macklem",
+    "China PBOC", "PBoC", "Xi Jinping", "Beijing policy"
 ]
 
 EXCLUSION_KEYWORDS = ["auction", "bid-to-cover", "Energy", "Coal", "NATO"]
@@ -245,33 +225,39 @@ async def post_to_facebook(message: str) -> None:
     data = {"message": message + hashtags, "access_token": page_token}
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(fb_url, data=data)
+            r = await client.post(fb_url, data=data)
+            if r.status_code == 200:
+                logging.info("✅ Posted to Facebook successfully.")
+            else:
+                logging.error(f"❌ Facebook post failed: {r.text}")
     except Exception as e:
         logging.error(f"Facebook error: {e}")
 
 ###############################################################################
-# 7. Main HMM: Fetch & Post Forex/Macro Headlines
+# 7. Main Runner Logic
 ###############################################################################
 async def fetch_and_post_headlines(bot: Bot):
-    # LOAD STATE FROM DB (Not File)
+    # LOAD STATE FROM DB
     state = get_bot_state(doc_name='forex_state')
     last_link = state.get('last_link')
     last_time = state.get('last_time', 0.0)
 
     new_items = []
     for url in RSS_URLS:
-        feed = feedparser.parse(url)
-        for e in feed.entries:
-            link = e.get("link")
-            pub = e.get("published_parsed")
-            if link == last_link: break
-            if pub and time.mktime(pub) <= last_time: continue
-            new_items.append(e)
+        try:
+            feed = feedparser.parse(url)
+            for e in feed.entries:
+                link = e.get("link")
+                pub = e.get("published_parsed")
+                if link == last_link: break
+                if pub and time.mktime(pub) <= last_time: continue
+                new_items.append(e)
+        except Exception as e:
+            logging.error(f"Feed error {url}: {e}")
 
     new_items.sort(key=lambda x: x.get("published_parsed") or time.gmtime())
 
     if not new_items:
-        logging.info("📭 No new forex items.")
         return
 
     latest_timestamp = last_time
@@ -279,6 +265,7 @@ async def fetch_and_post_headlines(bot: Bot):
 
     for e in new_items:
         raw = e.title or ""
+        
         if should_exclude_headline(raw): continue
 
         # Identify Flag
@@ -288,12 +275,14 @@ async def fetch_and_post_headlines(bot: Bot):
                 flag = f
                 break
         
+        # Macro check
         if not flag:
-            if any(k.lower() in raw.lower() for k in IMPORTANT_KEYWORDS):
-                flag = "🇺🇸" # Default to US/Global for macro
+            if any(re.search(r"\b" + re.escape(k) + r"\b", raw, re.IGNORECASE) for k in IMPORTANT_KEYWORDS):
+                flag = "🇺🇸" # Default to US/Global
             else:
                 continue
 
+        logging.info(f"📰 Processing: {raw}")
         title = clean_title(raw)
         somali = await translate_to_somali(title)
         if not somali: continue
@@ -331,93 +320,13 @@ async def fetch_and_post_headlines(bot: Bot):
     if latest_timestamp > last_time:
         save_bot_state(latest_link, latest_timestamp, doc_name='forex_state')
 
-###############################################################################
-# 8. Crypto: Fetch & Post
-###############################################################################
-CRYPTO_KEYWORDS = [
-    "bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain",
-    "solana", "xrp", "bnb", "doge", "cardano", "ada", "polkadot"
-]
-
-async def fetch_and_post_crypto(bot: Bot):
-    if not TELEGRAM_CRYPTO_CHANNEL_ID or not CRYPTO_RSS_FEEDS: return
-
-    # LOAD STATE FROM DB (Crypto has its own memory)
-    state = get_bot_state(doc_name='crypto_state')
-    last_link = state.get('last_link')
-    last_time = state.get('last_time', 0.0)
-
-    new_items = []
-    for url in CRYPTO_RSS_FEEDS:
-        feed = feedparser.parse(url)
-        for e in feed.entries[:15]:
-            link = e.get("link")
-            pub = e.get("published_parsed")
-            if link == last_link: break
-            if pub and time.mktime(pub) <= last_time: continue
-            new_items.append(e)
-    
-    new_items.sort(key=lambda x: x.get("published_parsed") or time.gmtime())
-
-    if not new_items: return
-
-    latest_timestamp = last_time
-    latest_link = last_link
-
-    for e in new_items:
-        title = e.title or ""
-        if not any(k in title.lower() for k in CRYPTO_KEYWORDS): continue
-
-        somali = await translate_to_somali(title)
-        if not somali: continue
-
-        tone, horizon, conf = await analyze_sentiment(title)
-
-        # 1. SAVE TO DASHBOARD (As Crypto)
-        save_news_to_dashboard(title, somali, tone, horizon, conf, 'Crypto', '🪙')
-
-        # 2. SEND TO CRYPTO CHANNEL
-        message = f"🪙 {somali}\n\n({tone} — {horizon} — Confidence: {conf}%)"
-        try:
-            await bot.send_message(
-                chat_id=TELEGRAM_CRYPTO_CHANNEL_ID,
-                text=message,
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-            logging.info(f"✅ Crypto posted: {title[:40]}...")
-        except Exception as err:
-            logging.error(f"Crypto error: {err}")
-
-        # Track state
-        if e.get("link"): latest_link = e.get("link")
-        if e.get("published_parsed"): 
-            latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
-
-        await asyncio.sleep(2)
-
-    # SAVE STATE TO DB
-    if latest_timestamp > last_time:
-        save_bot_state(latest_link, latest_timestamp, doc_name='crypto_state')
-
-###############################################################################
-# 9. Main Runner
-###############################################################################
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    
-    # Initialize Crypto Bot only if token exists
-    crypto_bot = None
-    if TELEGRAM_CRYPTO_TOKEN:
-        crypto_bot = Bot(token=TELEGRAM_CRYPTO_TOKEN)
-    
-    logging.info("🚀 Render Bot Started. Listening for news...")
+    logging.info("🚀 Render Forex Bot Started. Listening for news...")
 
     while True:
         try:
             await fetch_and_post_headlines(bot)
-            if crypto_bot:
-                await fetch_and_post_crypto(crypto_bot)
         except Exception as e:
             logging.error(f"❌ Fatal error in main loop: {e}")
         
