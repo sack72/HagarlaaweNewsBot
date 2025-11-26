@@ -25,7 +25,7 @@ GLOSSARY = {
     "liquidity injection": "gelinta lacagta dareeraha ah",
     "overnight rate": "heerka dulsaar ee habeenka",
     "dot plot": "jadwalka saadaasha fed-ka",
-    "fomc": "guddiga suuqa furan ee fed-ka",
+    "fomc": "guddiga suuqa furan ee fed-ka","white house": "aqalka cad",
 
     # ---------------------------------------------------------
     # MACRO DATA: OUTPUT, SURVEYS & HOUSING
