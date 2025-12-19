@@ -48,7 +48,7 @@ except Exception as e:
 # 2. Environment & Setup
 ###############################################################################
 TELEGRAM_BOT_TOKEN           = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID          = os.getenv("TELEGRAM_CHANNEL_ID")          # HMM News
+TELEGRAM_CHANNEL_ID          = os.getenv("TELEGRAM_CHANNEL_ID")
 RSS_URLS_RAW                 = os.getenv("RTT_RSS_FEED_URL", "")
 OPENAI_API_KEY               = os.getenv("OPENAI_API_KEY")
 
@@ -59,7 +59,7 @@ if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, OPENAI_API_KEY]):
 RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
 
 ###############################################################################
-# 3. Database State Management (Replaces Text Files)
+# 3. Database State Management
 ###############################################################################
 def get_bot_state(doc_name='forex_state'):
     """Retrieves last_link and last_time from Firestore"""
@@ -104,7 +104,6 @@ def save_news_to_dashboard(title, somali_text, tone, horizon, confidence, asset_
 # 4. Translation with External Glossary
 ###############################################################################
 def apply_glossary(text: str) -> str:
-    # Uses the imported GLOSSARY variable from glossary.py
     for eng, som in GLOSSARY.items():
         pattern = re.compile(r"\b" + re.escape(eng) + r"\b", re.IGNORECASE)
         text = pattern.sub(som, text)
@@ -136,7 +135,6 @@ async def translate_to_somali(text: str) -> str:
                 temperature=0.3,
                 max_tokens=300,
             )
-            # Apply the 400-word glossary here
             result = apply_glossary(step2.choices[0].message.content.strip())
             return result
     except Exception as e:
@@ -184,26 +182,54 @@ async def analyze_sentiment(text: str) -> tuple[str, str, int]:
         return ("Neutral", "Unknown", 50)
 
 ###############################################################################
-# 6. Filters & Facebook
+# 6. FILTERS: HIGH IMPACT ONLY
 ###############################################################################
+
+# Used for visual flags only
 TARGET_FOREX_NEWS = {
     "USD": "🇺🇸", "EUR": "🇪🇺", "JPY": "🇯🇵", "GBP": "🇬🇧",
     "CAD": "🇨🇦", "CHF": "🇨🇭", "AUD": "🇦🇺", "NZD": "🇳🇿",
     "United States": "🇺🇸", "US": "🇺🇸",
-    "Europe": "🇪🇺", "Japan": "🇯🇵", "UK": "🇬🇧",
+    "Europe": "🇪🇺", "Japan": "🇯🇵", "UK": "🇬🇧", "Britain": "🇬🇧",
     "Canada": "🇨🇦", "Swiss": "🇨🇭", "Australia": "🇦🇺", "New Zealand": "🇳🇿"
 }
 
-IMPORTANT_KEYWORDS = [
-    "Trump", "Biden", "White House", "Election", "Republican", "Democrat",
-    "Powell", "Fed", "Federal Reserve", "FOMC",
-    "Yellen", "Treasury Secretary", "ECB", "Lagarde", "Bank of Japan",
-    "BOJ", "RBA", "Philip Lowe", "RBNZ", "BOE", "Andrew Bailey",
-    "SNB", "Jordan", "Bank of Canada", "BoC", "Tiff Macklem",
-    "China PBOC", "PBoC", "Xi Jinping", "Beijing policy"
+# 🚨 STRICT FILTER: Headline MUST contain one of these to be posted
+HIGH_IMPACT_KEYWORDS = [
+    # --- Inflation Data ---
+    "CPI", "PPI", "PCE", "Inflation", "Consumer Price Index",
+    
+    # --- Employment/Jobs ---
+    "Non-Farm", "NFP", "Payrolls", "Unemployment Rate", "Jobless Claims", 
+    "Employment Change", "Average Earnings",
+    
+    # --- Central Banks (Decisions Only) ---
+    "Interest Rate", "Rate Decision", "Rate Hike", "Rate Cut", 
+    "Monetary Policy", "FOMC", "Fed Chair", "Powell", 
+    "Lagarde", "Bailey", "Ueda", "Macklem", "Orr", "Lowe", "Bullock",
+    "Meeting Minutes", "ECB", "BOE", "BOJ", "RBA", "RBNZ", "BOC",
+    
+    # --- Growth & Activity ---
+    "GDP", "Gross Domestic Product", "Retail Sales", "PMI", "ISM", 
+    "Consumer Confidence", "Sentiment", "Durable Goods",
+    
+    # --- Major Geopolitics ---
+    "Election", "War", "Geopolitical"
 ]
 
-EXCLUSION_KEYWORDS = ["auction", "bid-to-cover", "Energy", "Coal", "NATO"]
+EXCLUSION_KEYWORDS = [
+    "auction", "bid-to-cover", "Energy", "Coal", "NATO", 
+    "ETF", "Stocks", "close", "open", "futures", "preview",
+    "review", "wrap", "morning", "evening"
+]
+
+def is_high_impact(text: str) -> bool:
+    """Checks if the text contains a high-impact keyword."""
+    for keyword in HIGH_IMPACT_KEYWORDS:
+        # \b ensures we match "Fed" but not "FedEx"
+        if re.search(r"\b" + re.escape(keyword) + r"\b", text, re.IGNORECASE):
+            return True
+    return False
 
 def should_exclude_headline(title: str) -> bool:
     for k in EXCLUSION_KEYWORDS:
@@ -266,27 +292,30 @@ async def fetch_and_post_headlines(bot: Bot):
     for e in new_items:
         raw = e.title or ""
         
+        # 1. First, check exclusions
         if should_exclude_headline(raw): continue
 
-        # Identify Flag
-        flag = None
+        # 2. HIGH IMPACT CHECK: Skip if it is not a major event
+        if not is_high_impact(raw):
+            # Logging this helps you verify it is filtering correctly
+            # logging.info(f"⏩ Skipped (Low Impact): {raw[:30]}...") 
+            continue
+
+        # 3. Identify Flag (For visual only)
+        flag = "🌍" 
         for c, f in TARGET_FOREX_NEWS.items():
             if re.search(r"\b" + re.escape(c) + r"\b", raw, re.IGNORECASE):
                 flag = f
                 break
-        
-        # Macro check
-        if not flag:
-            if any(re.search(r"\b" + re.escape(k) + r"\b", raw, re.IGNORECASE) for k in IMPORTANT_KEYWORDS):
-                flag = "🇺🇸" # Default to US/Global
-            else:
-                continue
 
-        logging.info(f"📰 Processing: {raw}")
+        logging.info(f"📰 Processing HIGH IMPACT: {raw}")
         title = clean_title(raw)
+        
+        # Translate
         somali = await translate_to_somali(title)
         if not somali: continue
 
+        # Analyze
         tone, horizon, conf = await analyze_sentiment(title)
 
         # 1. SAVE TO DASHBOARD
@@ -322,7 +351,7 @@ async def fetch_and_post_headlines(bot: Bot):
 
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    logging.info("🚀 Render Forex Bot Started. Listening for news...")
+    logging.info("🚀 Render Forex Bot Started (HIGH IMPACT MODE). Listening for news...")
 
     while True:
         try:
@@ -330,6 +359,7 @@ async def main():
         except Exception as e:
             logging.error(f"❌ Fatal error in main loop: {e}")
         
+        # Check every 60 seconds
         logging.info("⏳ Sleeping 60 seconds...")
         await asyncio.sleep(60)
 
