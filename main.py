@@ -76,7 +76,6 @@ def save_bot_state(last_link, last_time, doc_name='forex_state'):
         logging.error(f"⚠️ Error saving state: {e}")
 
 def save_news_to_dashboard(title, somali_text, analysis, flag):
-    """Updated to save the new structured analysis"""
     try:
         db.collection('market_sentiment').add({
             'title': title,
@@ -150,14 +149,10 @@ async def translate_to_somali(text: str) -> str:
 # 5. ADVANCED AI ANALYST (Structured Output)
 ###############################################################################
 async def analyze_sentiment_advanced(text: str) -> Dict[str, Any]:
-    """
-    Returns structured data: {sentiment, asset, reason, impact}
-    """
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
             
-            # --- THE PROMPT ENGINEERING MAGIC ---
             system_prompt = (
                 "You are an expert Forex Market Analyst. Analyze the news headline. "
                 "Output strictly in this format (separate with pipes |): "
@@ -221,7 +216,7 @@ def is_major_currency(text: str) -> str:
     for keyword, flag in TARGET_FOREX_NEWS.items():
         if re.search(r"\b" + re.escape(keyword) + r"\b", text, re.IGNORECASE):
             return flag
-    return "🌍" # Default flag if not found (For testing mode)
+    return "🌍" # Default flag for testing
 
 def is_high_impact(text: str) -> bool:
     for keyword in HIGH_IMPACT_KEYWORDS:
@@ -279,15 +274,15 @@ async def fetch_and_post_headlines(bot: Bot):
     for e in new_items:
         raw = e.title or ""
         
-        # 1. Exclude Junk (Keep this enabled to avoid absolute garbage)
+        # 1. Exclude Junk
         if should_exclude_headline(raw): continue
 
         # --- 🚨 TEST MODE: FILTERS DISABLED 🚨 ---
+        # To enable filters later, uncomment these lines:
         # flag = is_major_currency(raw)
         # if not flag: continue
         # if not is_high_impact(raw): continue
         
-        # For testing, we just get the flag but don't skip if missing
         flag = is_major_currency(raw) 
         # -----------------------------------------
 
@@ -313,10 +308,9 @@ async def fetch_and_post_headlines(bot: Bot):
         # --- SAVE TO DASHBOARD ---
         save_news_to_dashboard(title, somali, analysis, flag)
 
-        # --- CONSTRUCT PRO MESSAGE ---
+        # --- CONSTRUCT PRO MESSAGE (NO ENGLISH TITLE) ---
         message = (
-            f"{flag} **{title.upper()}**\n\n"
-            f"{somali}\n"
+            f"{flag} **{somali}**\n"
             f"━━━━━━━━━━━━━━\n"
             f"📊 **Falanqeynta Suuqa:**\n"
             f"🔹 **Saameynta:** {analysis['asset']} {sent_emoji} ({analysis['sentiment']})\n"
@@ -328,7 +322,7 @@ async def fetch_and_post_headlines(bot: Bot):
             await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=message, parse_mode="Markdown", disable_web_page_preview=True)
             logging.info(f"✅ Telegram Posted.")
             
-            # Facebook (Plain text version recommended for FB, but Markdown is fine)
+            # Facebook
             fb_message = message.replace("**", "").replace("🔹", "-") + "\n\n#HagarlaaweHMM #ForexSomali"
             await post_to_facebook(fb_message)
             
