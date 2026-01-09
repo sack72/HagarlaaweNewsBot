@@ -1,9 +1,0 @@
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-
-TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
-openai.api_key = os.getenv("OPENAI_API_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
