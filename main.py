@@ -81,7 +81,6 @@ TARGET_CURRENCIES = {
 }
 
 # 🗣️ CLUSTER KEYWORDS (Triggers Buffering)
-# If a news title has these, we WAIT and summarize later.
 CLUSTER_KEYWORDS = [
     "Speech", "Testimony", "Press Conference", "Meeting Minutes", 
     "Statement", "Trump", "Powell", "Lagarde", "Bailey", "Ueda", "Q&A"
@@ -90,13 +89,11 @@ CLUSTER_KEYWORDS = [
 EXCLUSION_KEYWORDS = ["auction", "bid-to-cover", "close", "open", "preview", "review", "summary", "poll", "wrap"]
 
 # ------------------------------------------------------------------
-# 4. BUFFERING SYSTEM (The "Waiting Room")
+# 4. BUFFERING SYSTEM
 # ------------------------------------------------------------------
-# Structure: { 'event_key': {'headlines': [], 'start_time': timestamp} }
 news_buffer = {}
-
-BUFFER_TIMEOUT_SECONDS = 300  # Wait 5 minutes max to collect headlines
-MAX_BUFFER_SIZE = 10          # Or post if we hit 10 headlines
+BUFFER_TIMEOUT_SECONDS = 300 
+MAX_BUFFER_SIZE = 10 
 
 # ------------------------------------------------------------------
 # 5. HELPER FUNCTIONS
@@ -120,36 +117,32 @@ def get_flag_and_impact(text):
     flag = None
     impact = None
     
-    # Check Currency
     for k, f in TARGET_CURRENCIES.items():
         if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
             flag = f
             break
             
-    # Check Red Impact
     for k in RED_FOLDER_KEYWORDS:
         if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
-            impact = "🔴" # High
+            impact = "🔴" 
             break
             
-    # Check Orange Impact (if not Red)
     if not impact:
         for k in ORANGE_FOLDER_KEYWORDS:
             if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
-                impact = "🟠" # Medium
+                impact = "🟠" 
                 break
                 
     return flag, impact
 
 def should_buffer(text):
-    """Returns True if this is a Speech/Meeting that needs summarizing."""
     for k in CLUSTER_KEYWORDS:
         if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
             return True
     return False
 
 def clean_title(t):
-    t = re.sub(r"[\U0001F1E6-\U0001F1FF]{2}:?\s*", "", t) # Remove existing flags
+    t = re.sub(r"[\U0001F1E6-\U0001F1FF]{2}:?\s*", "", t)
     t = re.sub(r"^[^:]+:\s*", "", t).strip()
     return t
 
@@ -163,9 +156,6 @@ def apply_glossary(text):
 # 6. AI FUNCTIONS
 # ------------------------------------------------------------------
 async def summarize_cluster(headlines: List[str]) -> Dict[str, Any]:
-    """
-    Takes a list of 5-10 headlines and returns a SINGLE summary.
-    """
     joined_text = "\n".join(headlines)
     try:
         async with httpx.AsyncClient() as http_client:
@@ -173,7 +163,6 @@ async def summarize_cluster(headlines: List[str]) -> Dict[str, Any]:
             
             system_prompt = (
                 "You are an expert Forex Analyst. "
-                "I will give you a list of real-time headlines from a single event (like a Fed Speech or Trump Rally). "
                 "1. Summarize the KEY takeaways into 2-3 Somali bullet points. "
                 "2. Determine the overall sentiment for the asset. "
                 "CONTEXT: Date is 2026. Trump is President. "
@@ -191,7 +180,6 @@ async def summarize_cluster(headlines: List[str]) -> Dict[str, Any]:
             )
             out = resp.choices[0].message.content.strip()
             
-            # Parse
             sentiment = "Neutral"
             summary = out
             if "Sentiment:" in out and "|" in out:
@@ -206,15 +194,13 @@ async def summarize_cluster(headlines: List[str]) -> Dict[str, Any]:
         return {"sentiment": "Neutral", "summary": "Warbixin kooban lama heli karo."}
 
 async def analyze_single_news(text):
-    """Standard analysis for single headlines (CPI, GDP, etc)"""
-    # ... (Same logic as before, just kept compact) ...
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
-            system_prompt = "Analyze headline. Output: Sentiment: [Bullish/Bearish] | Asset: [USD/EUR] | Reason: [Somali explanation] | Impact: [High/Med]"
+            system_prompt = "Analyze headline. Output: Sentiment: [Bullish/Bearish] | Asset: [USD/EUR] | Reason: [Somali explanation] | Impact: [High/Med/Low]"
             resp = await client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"system","content":system_prompt},{"role":"user","content":text}])
             out = resp.choices[0].message.content.strip()
-            # Simple parsing logic
+            
             data = {"sentiment":"Neutral", "asset":"USD", "reason":"", "impact":"Med"}
             parts = out.split("|")
             for p in parts:
@@ -227,7 +213,6 @@ async def analyze_single_news(text):
         return {"sentiment":"Neutral", "asset":"USD", "reason":"", "impact":"Med"}
 
 async def translate_to_somali(text):
-    # Reuse your existing robust translation function
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
@@ -247,7 +232,6 @@ async def process_news_feed(bot: Bot):
     last_link = state.get('last_link')
     last_time = state.get('last_time', 0.0)
 
-    # A. FETCH
     new_items = []
     for url in RSS_URLS:
         try:
@@ -267,60 +251,53 @@ async def process_news_feed(bot: Bot):
 
         for e in new_items:
             raw = e.title or ""
-            # 1. Filter Junk
             if any(k in raw.lower() for k in EXCLUSION_KEYWORDS): continue
             
-            # 2. Check Impact & Currency
             flag, impact = get_flag_and_impact(raw)
-            
-            # STRICT FILTER: Must be Top 8 Currency AND (Red OR Orange)
             if not flag or not impact: continue
 
-            # 3. BUFFER CHECK (Is this a Speech/Cluster event?)
+            # BUFFER CHECK
             if should_buffer(raw):
-                # Identify the key (e.g., "USD_SPEECH") to group them
                 buffer_key = f"{flag}_SPEECH"
                 current_time = time.time()
-                
                 if buffer_key not in news_buffer:
                     news_buffer[buffer_key] = {'headlines': [], 'start_time': current_time}
-                
                 news_buffer[buffer_key]['headlines'].append(clean_title(raw))
-                logging.info(f"⏳ Buffered Speech Headline: {raw}")
-                
-                # Update trackers but DON'T POST yet
+                logging.info(f"⏳ Buffered Speech: {raw}")
                 if e.get("link"): latest_link = e.get("link")
                 if e.get("published_parsed"): latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
                 continue
 
-            # 4. STANDARD PROCESSING (Single Event like CPI)
-            logging.info(f"📰 Processing Standard: {raw}")
+            # STANDARD PROCESSING
+            logging.info(f"📰 Processing: {raw}")
             title = clean_title(raw)
             somali = await translate_to_somali(title)
             analysis = await analyze_single_news(title)
             
             sent_emoji = "📈" if "Bullish" in analysis['sentiment'] else "📉"
             if "Neutral" in analysis['sentiment']: sent_emoji = "⚖️"
+            
+            impact_emoji = "🟢"
+            if "High" in analysis['impact']: impact_emoji = "🔴"
+            elif "Medium" in analysis['impact']: impact_emoji = "🟠"
 
-            # Post Standard Message
+            # --- UPDATED MESSAGE FORMAT WITH UNIQUE EMOJIS ---
             msg = (
                 f"{flag} {impact} **{somali}**\n"
                 f"━━━━━━━━━━━━━━\n"
-                f"📊 **Falanqeynta:**\n"
-                f"🔹 **Saameynta:** {analysis['asset']} {sent_emoji}\n"
-                f"🔹 **Sababta:** {analysis['reason']}"
+                f"📊 **Falanqeynta Suuqa:**\n"
+                f"🎯 **Saameynta:** {analysis['asset']} {sent_emoji}\n"
+                f"💡 **Sababta:** {analysis['reason']}\n"
+                f"🚨 **Muhiimadda:** {analysis['impact']} {impact_emoji}"
             )
             await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, parse_mode="Markdown", disable_web_page_preview=True)
             
-            # Track
             if e.get("link"): latest_link = e.get("link")
             if e.get("published_parsed"): latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
 
-        # Save State
         save_bot_state(latest_link, latest_timestamp)
 
-    # B. PROCESS BUFFERS (The Summarizer)
-    # Check if any buffer is ready to be flushed
+    # PROCESS BUFFERS
     current_time = time.time()
     keys_to_delete = []
 
@@ -328,21 +305,16 @@ async def process_news_feed(bot: Bot):
         elapsed = current_time - data['start_time']
         count = len(data['headlines'])
         
-        # FLUSH CONDITION: > 5 minutes passed OR > 10 headlines collected
         if elapsed > BUFFER_TIMEOUT_SECONDS or count >= MAX_BUFFER_SIZE:
-            logging.info(f"🚀 Flushing Buffer for {key} ({count} items)")
-            
-            # Generate Summary
+            logging.info(f"🚀 Flushing Buffer: {key}")
             cluster_result = await summarize_cluster(data['headlines'])
-            
-            # Flag extraction from key
             flag_emoji = key.split("_")[0] 
             
             sent_emoji = "⚖️"
             if "Bullish" in cluster_result['sentiment']: sent_emoji = "📈"
             elif "Bearish" in cluster_result['sentiment']: sent_emoji = "📉"
 
-            # Post Summary Message
+            # --- UPDATED SUMMARY FORMAT ---
             summary_msg = (
                 f"{flag_emoji} 📣 **WARBIXIN KOOBAN (Live Update)**\n"
                 f"━━━━━━━━━━━━━━\n"
@@ -358,13 +330,12 @@ async def process_news_feed(bot: Bot):
             
             keys_to_delete.append(key)
 
-    # Clean up empty buffers
     for k in keys_to_delete:
         del news_buffer[k]
 
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    logging.info("🚀 Bot Started (Red/Orange + Speech Summarizer).")
+    logging.info("🚀 Bot Started (Live Production).")
     while True:
         try:
             await process_news_feed(bot)
