@@ -50,7 +50,7 @@ if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, OPENAI_API_KEY]):
 RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
 
 # ------------------------------------------------------------------
-# 3. IMPACT DEFINITIONS (Red vs Orange)
+# 3. IMPACT DEFINITIONS
 # ------------------------------------------------------------------
 
 # 🔴 RED FOLDER (High Impact)
@@ -161,6 +161,7 @@ async def summarize_cluster(headlines: List[str]) -> Dict[str, Any]:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
             
+            # --- PRESERVED YOUR EXACT PROMPT ---
             system_prompt = (
                 "You are an expert Forex Analyst. "
                 "1. Summarize the KEY takeaways into 2-3 Somali bullet points. "
@@ -281,7 +282,6 @@ async def process_news_feed(bot: Bot):
             if "High" in analysis['impact']: impact_emoji = "🔴"
             elif "Medium" in analysis['impact']: impact_emoji = "🟠"
 
-            # --- UPDATED MESSAGE FORMAT WITH UNIQUE EMOJIS ---
             msg = (
                 f"{flag} {impact} **{somali}**\n"
                 f"━━━━━━━━━━━━━━\n"
@@ -314,13 +314,12 @@ async def process_news_feed(bot: Bot):
             if "Bullish" in cluster_result['sentiment']: sent_emoji = "📈"
             elif "Bearish" in cluster_result['sentiment']: sent_emoji = "📉"
 
-            # --- UPDATED SUMMARY FORMAT ---
+            # --- ONLY CHANGE IS HERE: REMOVED FOOTER ---
             summary_msg = (
                 f"{flag_emoji} 📣 **WARBIXIN KOOBAN (Live Update)**\n"
                 f"━━━━━━━━━━━━━━\n"
                 f"{cluster_result['summary']}\n\n"
-                f"📊 **Guud ahaan:** {sent_emoji} ({cluster_result['sentiment']})\n"
-                f"*(Waxaan soo koobnay {count} qodob oo muhiim ah)*"
+                f"📊 **Guud ahaan:** {sent_emoji} ({cluster_result['sentiment']})"
             )
             
             try:
