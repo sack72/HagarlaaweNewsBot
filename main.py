@@ -43,6 +43,10 @@ TELEGRAM_CHANNEL_ID  = os.getenv("TELEGRAM_CHANNEL_ID")
 RSS_URLS_RAW         = os.getenv("RTT_RSS_FEED_URL", "")
 OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY")
 
+# --- FACEBOOK ENV VARS ---
+FACEBOOK_ACCESS_TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN")
+FACEBOOK_PAGE_ID      = os.getenv("FACEBOOK_PAGE_ID")
+
 if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, OPENAI_API_KEY]):
     logging.error("Missing ENV variables.")
     sys.exit(1)
@@ -53,7 +57,6 @@ RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
 # 3. IMPACT DEFINITIONS
 # ------------------------------------------------------------------
 
-# 🔴 RED FOLDER (High Impact)
 RED_FOLDER_KEYWORDS = [
     "Non-Farm", "NFP", "Unemployment Rate", "CPI", "Interest Rate", 
     "Fed Chair", "FOMC", "ECB President", "BOE Governor", "BOJ Governor", 
@@ -61,14 +64,12 @@ RED_FOLDER_KEYWORDS = [
     "Powell", "Lagarde", "Bailey", "Ueda", "Trump"
 ]
 
-# 🟠 ORANGE FOLDER (Medium Impact)
 ORANGE_FOLDER_KEYWORDS = [
     "PPI", "Producer Price", "Core PCE", "Consumer Confidence", 
     "Building Permits", "Housing Starts", "ISM", "PMI", "Trade Balance", 
     "JOLTS", "ADP", "Claimant Count", "Zew", "Ifo", "Tankan"
 ]
 
-# 🟢 TARGET CURRENCIES (Top 8)
 TARGET_CURRENCIES = {
     "USD": "🇺🇸", "US": "🇺🇸", "Fed": "🇺🇸", "FOMC": "🇺🇸", "Powell": "🇺🇸", "Trump": "🇺🇸",
     "EUR": "🇪🇺", "Europe": "🇪🇺", "ECB": "🇪🇺", "Lagarde": "🇪🇺",
@@ -80,7 +81,6 @@ TARGET_CURRENCIES = {
     "CHF": "🇨🇭", "Swiss": "🇨🇭", "SNB": "🇨🇭", "Jordan": "🇨🇭"
 }
 
-# 🗣️ CLUSTER KEYWORDS (Triggers Buffering)
 CLUSTER_KEYWORDS = [
     "Speech", "Testimony", "Press Conference", "Meeting Minutes", 
     "Statement", "Trump", "Powell", "Lagarde", "Bailey", "Ueda", "Q&A"
@@ -116,29 +116,21 @@ def save_bot_state(last_link, last_time):
 def get_flag_and_impact(text):
     flag = None
     impact = None
-    
     for k, f in TARGET_CURRENCIES.items():
         if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
-            flag = f
-            break
-            
+            flag = f; break
     for k in RED_FOLDER_KEYWORDS:
         if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
-            impact = "🔴" 
-            break
-            
+            impact = "🔴"; break
     if not impact:
         for k in ORANGE_FOLDER_KEYWORDS:
             if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
-                impact = "🟠" 
-                break
-                
+                impact = "🟠"; break
     return flag, impact
 
 def should_buffer(text):
     for k in CLUSTER_KEYWORDS:
-        if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
-            return True
+        if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE): return True
     return False
 
 def clean_title(t):
@@ -152,44 +144,58 @@ def apply_glossary(text):
         text = pattern.sub(som, text)
     return text
 
+def strip_markdown(text):
+    """Removes **bold** markers for Facebook."""
+    return text.replace("**", "").replace("__", "")
+
 # ------------------------------------------------------------------
-# 6. AI FUNCTIONS
+# 6. API HANDLERS (AI & Facebook)
 # ------------------------------------------------------------------
+async def send_to_facebook(text):
+    """Posts text to Facebook Page via Graph API."""
+    if not FACEBOOK_ACCESS_TOKEN or not FACEBOOK_PAGE_ID:
+        logging.warning("⚠️ Facebook credentials missing. Skipping post.")
+        return
+
+    clean_text = strip_markdown(text)
+    url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/feed"
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, data={"message": clean_text, "access_token": FACEBOOK_ACCESS_TOKEN})
+            if resp.status_code == 200:
+                logging.info("✅ Posted to Facebook")
+            else:
+                logging.error(f"❌ FB Error {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logging.error(f"❌ FB Connection Error: {e}")
+
 async def summarize_cluster(headlines: List[str]) -> Dict[str, Any]:
     joined_text = "\n".join(headlines)
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
-            
-            # --- PRESERVED YOUR EXACT PROMPT ---
             system_prompt = (
                 "You are an expert Forex Analyst. "
-                "1. Summarize the KEY takeaways into 2-3 Somali bullet points. "
-                "2. Determine the overall sentiment for the asset. "
+                "1. Summarize the KEY takeaways into 2-3 concise Somali bullet points (using •). "
+                "2. Do not use intro phrases like 'Here is the summary'. "
+                "3. Determine sentiment. "
                 "CONTEXT: Date is 2026. Trump is President. "
                 "Output format: Sentiment: [Bullish/Bearish] | Summary: [Your Somali Summary]"
             )
-
             resp = await client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": joined_text}
-                ],
-                temperature=0.2,
-                max_tokens=200,
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": joined_text}],
+                temperature=0.2, max_tokens=250,
             )
             out = resp.choices[0].message.content.strip()
-            
             sentiment = "Neutral"
             summary = out
             if "Sentiment:" in out and "|" in out:
                 parts = out.split("|")
                 sentiment = parts[0].replace("Sentiment:", "").strip()
                 summary = parts[1].replace("Summary:", "").strip()
-                
             return {"sentiment": sentiment, "summary": apply_glossary(summary)}
-            
     except Exception as e:
         logging.error(f"Cluster Summary Failed: {e}")
         return {"sentiment": "Neutral", "summary": "Warbixin kooban lama heli karo."}
@@ -201,7 +207,6 @@ async def analyze_single_news(text):
             system_prompt = "Analyze headline. Output: Sentiment: [Bullish/Bearish] | Asset: [USD/EUR] | Reason: [Somali explanation] | Impact: [High/Med/Low]"
             resp = await client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"system","content":system_prompt},{"role":"user","content":text}])
             out = resp.choices[0].message.content.strip()
-            
             data = {"sentiment":"Neutral", "asset":"USD", "reason":"", "impact":"Med"}
             parts = out.split("|")
             for p in parts:
@@ -277,11 +282,11 @@ async def process_news_feed(bot: Bot):
             
             sent_emoji = "📈" if "Bullish" in analysis['sentiment'] else "📉"
             if "Neutral" in analysis['sentiment']: sent_emoji = "⚖️"
-            
             impact_emoji = "🟢"
             if "High" in analysis['impact']: impact_emoji = "🔴"
             elif "Medium" in analysis['impact']: impact_emoji = "🟠"
 
+            # 1. SEND TO TELEGRAM
             msg = (
                 f"{flag} {impact} **{somali}**\n"
                 f"━━━━━━━━━━━━━━\n"
@@ -291,6 +296,9 @@ async def process_news_feed(bot: Bot):
                 f"🚨 **Muhiimadda:** {analysis['impact']} {impact_emoji}"
             )
             await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, parse_mode="Markdown", disable_web_page_preview=True)
+
+            # 2. SEND TO FACEBOOK
+            await send_to_facebook(msg)
             
             if e.get("link"): latest_link = e.get("link")
             if e.get("published_parsed"): latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
@@ -314,7 +322,7 @@ async def process_news_feed(bot: Bot):
             if "Bullish" in cluster_result['sentiment']: sent_emoji = "📈"
             elif "Bearish" in cluster_result['sentiment']: sent_emoji = "📉"
 
-            # --- ONLY CHANGE IS HERE: REMOVED FOOTER ---
+            # Summary Message
             summary_msg = (
                 f"{flag_emoji} 📣 **WARBIXIN KOOBAN (Live Update)**\n"
                 f"━━━━━━━━━━━━━━\n"
@@ -322,10 +330,14 @@ async def process_news_feed(bot: Bot):
                 f"📊 **Guud ahaan:** {sent_emoji} ({cluster_result['sentiment']})"
             )
             
+            # Post Summary to Telegram
             try:
                 await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=summary_msg, parse_mode="Markdown")
             except Exception as e:
-                logging.error(f"Failed to post summary: {e}")
+                logging.error(f"Failed to post summary TG: {e}")
+
+            # Post Summary to Facebook
+            await send_to_facebook(summary_msg)
             
             keys_to_delete.append(key)
 
