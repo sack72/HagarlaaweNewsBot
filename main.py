@@ -139,9 +139,15 @@ def clean_title(t):
     return t
 
 def apply_glossary(text):
+    # --- FIX 1: Protect "Aqalka Cad" from becoming "Aqalka Dolarka Kanada" ---
+    text = re.sub(r"Aqalka Cad", "AQALKA_TEMP_PLACEHOLDER", text, flags=re.IGNORECASE)
+    
     for eng, som in GLOSSARY.items():
         pattern = re.compile(r"\b" + re.escape(eng) + r"\b", re.IGNORECASE)
         text = pattern.sub(som, text)
+        
+    # Restore "Aqalka Cad"
+    text = text.replace("AQALKA_TEMP_PLACEHOLDER", "Aqalka Cad")
     return text
 
 def strip_markdown(text):
@@ -154,7 +160,7 @@ def strip_markdown(text):
 async def send_to_facebook(text):
     """Posts text to Facebook Page via Graph API."""
     if not FACEBOOK_ACCESS_TOKEN or not FACEBOOK_PAGE_ID:
-        logging.warning("⚠️ Facebook credentials missing. Skipping post.")
+        # Silent return if keys are missing to prevent error spam, or log as warning
         return
 
     clean_text = strip_markdown(text)
@@ -163,9 +169,7 @@ async def send_to_facebook(text):
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, data={"message": clean_text, "access_token": FACEBOOK_ACCESS_TOKEN})
-            if resp.status_code == 200:
-                logging.info("✅ Posted to Facebook")
-            else:
+            if resp.status_code != 200:
                 logging.error(f"❌ FB Error {resp.status_code}: {resp.text}")
     except Exception as e:
         logging.error(f"❌ FB Connection Error: {e}")
@@ -204,7 +208,8 @@ async def analyze_single_news(text):
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
-            system_prompt = "Analyze headline. Output: Sentiment: [Bullish/Bearish] | Asset: [USD/EUR] | Reason: [Somali explanation] | Impact: [High/Med/Low]"
+            # --- FIX 2: Explicitly tell AI to explain Reason in SOMALI ---
+            system_prompt = "Analyze headline. Output: Sentiment: [Bullish/Bearish] | Asset: [USD/EUR] | Reason: [Explain in SOMALI language] | Impact: [High/Med/Low]"
             resp = await client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"system","content":system_prompt},{"role":"user","content":text}])
             out = resp.choices[0].message.content.strip()
             data = {"sentiment":"Neutral", "asset":"USD", "reason":"", "impact":"Med"}
@@ -280,24 +285,25 @@ async def process_news_feed(bot: Bot):
             somali = await translate_to_somali(title)
             analysis = await analyze_single_news(title)
             
-            sent_emoji = "📈" if "Bullish" in analysis['sentiment'] else "📉"
-            if "Neutral" in analysis['sentiment']: sent_emoji = "⚖️"
-            impact_emoji = "🟢"
-            if "High" in analysis['impact']: impact_emoji = "🔴"
-            elif "Medium" in analysis['impact']: impact_emoji = "🟠"
+            # --- FIX 3: Conditional Display (Only High Impact gets Analysis) ---
+            if impact == "🔴":
+                sent_emoji = "📈" if "Bullish" in analysis['sentiment'] else "📉"
+                if "Neutral" in analysis['sentiment']: sent_emoji = "⚖️"
+                impact_emoji = "🔴"
 
-            # 1. SEND TO TELEGRAM
-            msg = (
-                f"{flag} {impact} **{somali}**\n"
-                f"━━━━━━━━━━━━━━\n"
-                f"📊 **Falanqeynta Suuqa:**\n"
-                f"🎯 **Saameynta:** {analysis['asset']} {sent_emoji}\n"
-                f"💡 **Sababta:** {analysis['reason']}\n"
-                f"🚨 **Muhiimadda:** {analysis['impact']} {impact_emoji}"
-            )
+                msg = (
+                    f"{flag} {impact} **{somali}**\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"📊 **Falanqeynta Suuqa:**\n"
+                    f"🎯 **Saameynta:** {analysis['asset']} {sent_emoji}\n"
+                    f"💡 **Sababta:** {analysis['reason']}\n"
+                    f"🚨 **Muhiimadda:** High 🔴"
+                )
+            else:
+                # Orange/Med impact gets just the news
+                msg = f"{flag} {impact} **{somali}**"
+
             await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, parse_mode="Markdown", disable_web_page_preview=True)
-
-            # 2. SEND TO FACEBOOK
             await send_to_facebook(msg)
             
             if e.get("link"): latest_link = e.get("link")
@@ -318,25 +324,28 @@ async def process_news_feed(bot: Bot):
             cluster_result = await summarize_cluster(data['headlines'])
             flag_emoji = key.split("_")[0] 
             
+            # Check if this buffer contains High Impact keywords
+            is_high_impact = any(k in " ".join(data['headlines']) for k in RED_FOLDER_KEYWORDS)
+
             sent_emoji = "⚖️"
             if "Bullish" in cluster_result['sentiment']: sent_emoji = "📈"
             elif "Bearish" in cluster_result['sentiment']: sent_emoji = "📉"
 
-            # Summary Message
             summary_msg = (
                 f"{flag_emoji} 📣 **WARBIXIN KOOBAN (Live Update)**\n"
                 f"━━━━━━━━━━━━━━\n"
-                f"{cluster_result['summary']}\n\n"
-                f"📊 **Guud ahaan:** {sent_emoji} ({cluster_result['sentiment']})"
+                f"{cluster_result['summary']}\n"
             )
+
+            # --- FIX 4: Only add "Guud ahaan" (Sentiment) if it is High Impact ---
+            if is_high_impact:
+                summary_msg += f"\n📊 **Guud ahaan:** {sent_emoji} ({cluster_result['sentiment']})"
             
-            # Post Summary to Telegram
             try:
                 await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=summary_msg, parse_mode="Markdown")
             except Exception as e:
                 logging.error(f"Failed to post summary TG: {e}")
 
-            # Post Summary to Facebook
             await send_to_facebook(summary_msg)
             
             keys_to_delete.append(key)
