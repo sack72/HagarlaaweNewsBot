@@ -42,8 +42,6 @@ TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID  = os.getenv("TELEGRAM_CHANNEL_ID")
 RSS_URLS_RAW         = os.getenv("RTT_RSS_FEED_URL", "")
 OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY")
-
-# --- FACEBOOK ENV VARS ---
 FACEBOOK_ACCESS_TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN")
 FACEBOOK_PAGE_ID      = os.getenv("FACEBOOK_PAGE_ID")
 
@@ -116,9 +114,23 @@ def save_bot_state(last_link, last_time):
 def get_flag_and_impact(text):
     flag = None
     impact = None
+    detected_currency_code = "USD" # Default
+
+    # Detect Currency Code & Flag
     for k, f in TARGET_CURRENCIES.items():
         if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
-            flag = f; break
+            flag = f
+            # Map keywords to Currency Codes
+            if f == "🇺🇸": detected_currency_code = "USD"
+            elif f == "🇪🇺": detected_currency_code = "EUR"
+            elif f == "🇯🇵": detected_currency_code = "JPY"
+            elif f == "🇬🇧": detected_currency_code = "GBP"
+            elif f == "🇨🇦": detected_currency_code = "CAD"
+            elif f == "🇦🇺": detected_currency_code = "AUD"
+            elif f == "🇳🇿": detected_currency_code = "NZD"
+            elif f == "🇨🇭": detected_currency_code = "CHF"
+            break
+            
     for k in RED_FOLDER_KEYWORDS:
         if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
             impact = "🔴"; break
@@ -126,7 +138,7 @@ def get_flag_and_impact(text):
         for k in ORANGE_FOLDER_KEYWORDS:
             if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
                 impact = "🟠"; break
-    return flag, impact
+    return flag, impact, detected_currency_code
 
 def should_buffer(text):
     for k in CLUSTER_KEYWORDS:
@@ -139,54 +151,46 @@ def clean_title(t):
     return t
 
 def apply_glossary(text):
-    # --- FIX 1: Protect "Aqalka Cad" from becoming "Aqalka Dolarka Kanada" ---
     text = re.sub(r"Aqalka Cad", "AQALKA_TEMP_PLACEHOLDER", text, flags=re.IGNORECASE)
-    
     for eng, som in GLOSSARY.items():
         pattern = re.compile(r"\b" + re.escape(eng) + r"\b", re.IGNORECASE)
         text = pattern.sub(som, text)
-        
-    # Restore "Aqalka Cad"
     text = text.replace("AQALKA_TEMP_PLACEHOLDER", "Aqalka Cad")
     return text
 
 def strip_markdown(text):
-    """Removes **bold** markers for Facebook."""
     return text.replace("**", "").replace("__", "")
 
 # ------------------------------------------------------------------
 # 6. API HANDLERS (AI & Facebook)
 # ------------------------------------------------------------------
 async def send_to_facebook(text):
-    """Posts text to Facebook Page via Graph API."""
     if not FACEBOOK_ACCESS_TOKEN or not FACEBOOK_PAGE_ID:
-        # Silent return if keys are missing to prevent error spam, or log as warning
         return
-
     clean_text = strip_markdown(text)
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/feed"
-    
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(url, data={"message": clean_text, "access_token": FACEBOOK_ACCESS_TOKEN})
-            if resp.status_code != 200:
-                logging.error(f"❌ FB Error {resp.status_code}: {resp.text}")
+            await client.post(url, data={"message": clean_text, "access_token": FACEBOOK_ACCESS_TOKEN})
     except Exception as e:
         logging.error(f"❌ FB Connection Error: {e}")
 
-async def summarize_cluster(headlines: List[str]) -> Dict[str, Any]:
+async def summarize_cluster(headlines: List[str], currency_code: str = "USD") -> Dict[str, Any]:
     joined_text = "\n".join(headlines)
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
+            
+            # --- UPDATED PROMPT: FOREX LOGIC ---
             system_prompt = (
-                "You are an expert Forex Analyst. "
-                "1. Summarize the KEY takeaways into 2-3 concise Somali bullet points (using •). "
-                "2. Do not use intro phrases like 'Here is the summary'. "
-                "3. Determine sentiment. "
-                "CONTEXT: Date is 2026. Trump is President. "
-                "Output format: Sentiment: [Bullish/Bearish] | Summary: [Your Somali Summary]"
+                f"You are a Forex Trading Algorithm focusing on {currency_code}. "
+                "RULES: "
+                "1. DOVISH (Rate Cuts, Easy Money) = BEARISH for Currency. "
+                "2. HAWKISH (Rate Hikes, Tight Money) = BULLISH for Currency. "
+                "3. Summarize key takeaways in 2-3 Somali bullet points. "
+                "Output format: Sentiment: [Bullish/Bearish] | Summary: [Somali Text]"
             )
+            
             resp = await client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": joined_text}],
@@ -200,19 +204,32 @@ async def summarize_cluster(headlines: List[str]) -> Dict[str, Any]:
                 sentiment = parts[0].replace("Sentiment:", "").strip()
                 summary = parts[1].replace("Summary:", "").strip()
             return {"sentiment": sentiment, "summary": apply_glossary(summary)}
-    except Exception as e:
-        logging.error(f"Cluster Summary Failed: {e}")
+    except Exception:
         return {"sentiment": "Neutral", "summary": "Warbixin kooban lama heli karo."}
 
-async def analyze_single_news(text):
+async def analyze_single_news(text, currency_code="USD"):
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
-            # --- FIX 2: Explicitly tell AI to explain Reason in SOMALI ---
-            system_prompt = "Analyze headline. Output: Sentiment: [Bullish/Bearish] | Asset: [USD/EUR] | Reason: [Explain in SOMALI language] | Impact: [High/Med/Low]"
-            resp = await client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"system","content":system_prompt},{"role":"user","content":text}])
+            
+            # --- CRITICAL FIX: FOREX LOGIC & CURRENCY LOCK ---
+            system_prompt = (
+                f"You are a Professional Forex Analyst focusing strictly on {currency_code}. "
+                "Analyze the headline for its impact on THIS currency specifically. "
+                "STRICT FOREX RULES:"
+                "1. Rate Hikes / Hawkish / Strong Inflation / Good Data = BULLISH."
+                "2. Rate Cuts / Dovish / Weak Inflation / Bad Data = BEARISH."
+                "3. If the news is about JPY, analyze JPY impact. If about EUR, analyze EUR impact."
+                "Output format: Sentiment: [Bullish/Bearish] | Asset: [{currency_code}] | Reason: [Brief explanation in SOMALI] | Impact: [High/Med/Low]"
+            )
+            
+            resp = await client.chat.completions.create(
+                model="gpt-4o-mini", 
+                messages=[{"role":"system","content":system_prompt},{"role":"user","content":text}]
+            )
             out = resp.choices[0].message.content.strip()
-            data = {"sentiment":"Neutral", "asset":"USD", "reason":"", "impact":"Med"}
+            
+            data = {"sentiment":"Neutral", "asset":currency_code, "reason":"", "impact":"Med"}
             parts = out.split("|")
             for p in parts:
                 if "Sentiment:" in p: data["sentiment"] = p.replace("Sentiment:", "").strip()
@@ -221,17 +238,16 @@ async def analyze_single_news(text):
                 if "Impact:" in p: data["impact"] = p.replace("Impact:", "").strip()
             return data
     except:
-        return {"sentiment":"Neutral", "asset":"USD", "reason":"", "impact":"Med"}
+        return {"sentiment":"Neutral", "asset":currency_code, "reason":"", "impact":"Med"}
 
 async def translate_to_somali(text):
     try:
         async with httpx.AsyncClient() as http_client:
             client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
-            sys_msg = "Translate to Somali. Context: 2026, Trump is President. No 'Former'. Financial style."
+            sys_msg = "Translate to Somali. Financial context. Keep it professional."
             resp = await client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"system","content":sys_msg},{"role":"user","content":text}])
             res = apply_glossary(resp.choices[0].message.content.strip())
-            res = re.sub(r"Madaxweynihii hore", "Madaxweynaha", res, flags=re.IGNORECASE)
-            return res
+            return re.sub(r"Madaxweynihii hore", "Madaxweynaha", res, flags=re.IGNORECASE)
     except:
         return ""
 
@@ -264,43 +280,43 @@ async def process_news_feed(bot: Bot):
             raw = e.title or ""
             if any(k in raw.lower() for k in EXCLUSION_KEYWORDS): continue
             
-            flag, impact = get_flag_and_impact(raw)
+            # --- FIX: GET CURRENCY CODE ---
+            flag, impact, cur_code = get_flag_and_impact(raw)
             if not flag or not impact: continue
 
             # BUFFER CHECK
             if should_buffer(raw):
-                buffer_key = f"{flag}_SPEECH"
+                buffer_key = f"{flag}_SPEECH_{cur_code}" # Add code to key
                 current_time = time.time()
                 if buffer_key not in news_buffer:
-                    news_buffer[buffer_key] = {'headlines': [], 'start_time': current_time}
+                    news_buffer[buffer_key] = {'headlines': [], 'start_time': current_time, 'currency': cur_code}
                 news_buffer[buffer_key]['headlines'].append(clean_title(raw))
-                logging.info(f"⏳ Buffered Speech: {raw}")
+                
                 if e.get("link"): latest_link = e.get("link")
                 if e.get("published_parsed"): latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
                 continue
 
             # STANDARD PROCESSING
-            logging.info(f"📰 Processing: {raw}")
+            logging.info(f"📰 Processing ({cur_code}): {raw}")
             title = clean_title(raw)
             somali = await translate_to_somali(title)
-            analysis = await analyze_single_news(title)
             
-            # --- FIX 3: Conditional Display (Only High Impact gets Analysis) ---
+            # --- FIX: PASS CURRENCY CODE TO AI ---
+            analysis = await analyze_single_news(title, currency_code=cur_code)
+            
             if impact == "🔴":
                 sent_emoji = "📈" if "Bullish" in analysis['sentiment'] else "📉"
                 if "Neutral" in analysis['sentiment']: sent_emoji = "⚖️"
-                impact_emoji = "🔴"
 
                 msg = (
                     f"{flag} {impact} **{somali}**\n"
                     f"━━━━━━━━━━━━━━\n"
                     f"📊 **Falanqeynta Suuqa:**\n"
-                    f"🎯 **Saameynta:** {analysis['asset']} {sent_emoji}\n"
+                    f"🎯 **Saameynta:** {analysis['asset']} {sent_emoji} ({analysis['sentiment']})\n"
                     f"💡 **Sababta:** {analysis['reason']}\n"
                     f"🚨 **Muhiimadda:** High 🔴"
                 )
             else:
-                # Orange/Med impact gets just the news
                 msg = f"{flag} {impact} **{somali}**"
 
             await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=msg, parse_mode="Markdown", disable_web_page_preview=True)
@@ -320,11 +336,12 @@ async def process_news_feed(bot: Bot):
         count = len(data['headlines'])
         
         if elapsed > BUFFER_TIMEOUT_SECONDS or count >= MAX_BUFFER_SIZE:
-            logging.info(f"🚀 Flushing Buffer: {key}")
-            cluster_result = await summarize_cluster(data['headlines'])
+            # Extract currency from stored buffer data
+            cur_code = data.get('currency', 'USD')
+            
+            cluster_result = await summarize_cluster(data['headlines'], currency_code=cur_code)
             flag_emoji = key.split("_")[0] 
             
-            # Check if this buffer contains High Impact keywords
             is_high_impact = any(k in " ".join(data['headlines']) for k in RED_FOLDER_KEYWORDS)
 
             sent_emoji = "⚖️"
@@ -337,16 +354,14 @@ async def process_news_feed(bot: Bot):
                 f"{cluster_result['summary']}\n"
             )
 
-            # --- FIX 4: Only add "Guud ahaan" (Sentiment) if it is High Impact ---
             if is_high_impact:
-                summary_msg += f"\n📊 **Guud ahaan:** {sent_emoji} ({cluster_result['sentiment']})"
+                summary_msg += f"\n📊 **Guud ahaan:** {cur_code} {sent_emoji} ({cluster_result['sentiment']})"
             
             try:
                 await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=summary_msg, parse_mode="Markdown")
+                await send_to_facebook(summary_msg)
             except Exception as e:
-                logging.error(f"Failed to post summary TG: {e}")
-
-            await send_to_facebook(summary_msg)
+                logging.error(f"Failed to post summary: {e}")
             
             keys_to_delete.append(key)
 
@@ -355,7 +370,7 @@ async def process_news_feed(bot: Bot):
 
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    logging.info("🚀 Bot Started (Live Production).")
+    logging.info("🚀 Bot Started (Forex Logic Fix Applied).")
     while True:
         try:
             await process_news_feed(bot)
