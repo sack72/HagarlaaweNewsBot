@@ -47,9 +47,19 @@ FACEBOOK_PAGE_ID      = os.getenv("FACEBOOK_PAGE_ID")
 # --- NEW: FOREXNEWS API ---
 FOREXNEWS_API_KEY     = os.getenv("FOREXNEWS_API_KEY")
 
+# --- TEST MODE ---
+# Set TEST_MODE=true in Render ENV to:
+#   1. Fetch last 10 articles regardless of timestamp (ignore last_forexnews_time)
+#   2. Log full API response JSON for debugging
+#   3. Skip saving state (so you can re-run and see same articles)
+TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
+
 if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, OPENAI_API_KEY, FOREXNEWS_API_KEY]):
     logging.error("Missing ENV variables. Need: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, OPENAI_API_KEY, FOREXNEWS_API_KEY")
     sys.exit(1)
+
+if TEST_MODE:
+    logging.info("⚠️ TEST MODE ENABLED — fetching latest 10 articles, not saving state")
 
 # --- LEGACY RSS (kept as fallback, set RTT_RSS_FEED_URL="" to disable) ---
 RSS_URLS_RAW = os.getenv("RTT_RSS_FEED_URL", "")
@@ -203,14 +213,14 @@ def strip_markdown(text):
 async def fetch_forexnews_articles(since_date: str = None) -> List[Dict]:
     """
     Fetch latest forex news articles from ForexNewsAPI.
-    Returns list of article dicts with: title, source_name, date, sentiment, 
-    currency_pair, image_url, news_url, text, type
+    In TEST_MODE: fetches 10 articles, ignores since_date, logs raw JSON.
+    In PRODUCTION: fetches 20 articles, filters by since_date.
     """
+    items_count = 10 if TEST_MODE else 20
     params = {
         "token": FOREXNEWS_API_KEY,
-        "items": 20,
+        "items": items_count,
     }
-    # Fetch general forex news (no pair filter — catches all relevant news)
     url = f"{FOREXNEWS_BASE_URL}"
 
     try:
@@ -218,10 +228,44 @@ async def fetch_forexnews_articles(since_date: str = None) -> List[Dict]:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
+
+            # --- DEBUG: Log raw response structure ---
+            if TEST_MODE:
+                logging.info(f"🔍 DEBUG — Raw API response keys: {list(data.keys())}")
+                # Log first article structure so you can see field names
+                articles_raw = data.get("data", [])
+                if not articles_raw:
+                    # Try alternative keys the API might use
+                    for possible_key in ["articles", "results", "news", "items"]:
+                        articles_raw = data.get(possible_key, [])
+                        if articles_raw:
+                            logging.info(f"🔍 DEBUG — Found articles under key: '{possible_key}'")
+                            break
+                    if not articles_raw and isinstance(data, list):
+                        articles_raw = data
+                        logging.info(f"🔍 DEBUG — Response is a direct list of {len(articles_raw)} items")
+
+                if articles_raw:
+                    first = articles_raw[0]
+                    logging.info(f"🔍 DEBUG — First article keys: {list(first.keys())}")
+                    logging.info(f"🔍 DEBUG — First article sample:")
+                    logging.info(f"    title: {first.get('title', 'N/A')}")
+                    logging.info(f"    date: {first.get('date', first.get('published_at', first.get('pubDate', 'N/A')))}")
+                    logging.info(f"    sentiment: {first.get('sentiment', 'N/A')}")
+                    logging.info(f"    currency_pair: {first.get('currency_pair', first.get('currencyPair', first.get('currencies', 'N/A')))}")
+                    logging.info(f"    source: {first.get('source_name', first.get('source', 'N/A'))}")
+                    logging.info(f"    news_url: {first.get('news_url', first.get('url', 'N/A'))}")
+                else:
+                    logging.warning(f"⚠️ DEBUG — No articles found! Full response (first 500 chars): {str(data)[:500]}")
+
+                logging.info(f"📡 ForexNewsAPI returned {len(articles_raw)} articles (TEST MODE — no time filter)")
+                return articles_raw
+
+            # --- PRODUCTION MODE ---
             articles = data.get("data", [])
             logging.info(f"📡 ForexNewsAPI returned {len(articles)} articles")
 
-            # Filter out articles older than our last processed timestamp
+            # Filter by timestamp
             if since_date:
                 articles = [
                     a for a in articles
@@ -230,6 +274,7 @@ async def fetch_forexnews_articles(since_date: str = None) -> List[Dict]:
                 logging.info(f"📰 {len(articles)} new articles after filtering")
 
             return articles
+
     except httpx.HTTPStatusError as e:
         logging.error(f"❌ ForexNewsAPI HTTP Error: {e.response.status_code} - {e.response.text}")
         return []
@@ -398,7 +443,14 @@ async def process_forexnews_feed(bot: Bot):
     state = get_bot_state()
     last_forexnews_time = state.get("last_forexnews_time", "")
 
-    articles = await fetch_forexnews_articles(since_date=last_forexnews_time)
+    # TEST MODE: ignore saved timestamp — always fetch latest
+    if TEST_MODE:
+        last_forexnews_time = ""
+        logging.info("🧪 TEST MODE — ignoring saved timestamp, fetching latest articles")
+
+    articles = await fetch_forexnews_articles(
+        since_date=last_forexnews_time if last_forexnews_time else None
+    )
 
     if not articles:
         return
@@ -512,9 +564,12 @@ async def process_forexnews_feed(bot: Bot):
         if article_date > latest_time:
             latest_time = article_date
 
-    # Save the latest processed timestamp
+    # Save the latest processed timestamp (skip in TEST MODE)
     if latest_time and latest_time != last_forexnews_time:
-        save_bot_state(last_forexnews_time=latest_time)
+        if TEST_MODE:
+            logging.info(f"🧪 TEST MODE — would save timestamp: {latest_time} (skipped)")
+        else:
+            save_bot_state(last_forexnews_time=latest_time)
 
 # ------------------------------------------------------------------
 # 10. ECONOMIC CALENDAR ALERT (runs less frequently)
@@ -701,7 +756,24 @@ async def process_buffers(bot: Bot):
 # ------------------------------------------------------------------
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    logging.info("🚀 Bot Started — ForexNewsAPI + RSS Hybrid Mode")
+
+    if TEST_MODE:
+        logging.info("🚀 Bot Started — TEST MODE (single run, then exit)")
+        logging.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        try:
+            await process_forexnews_feed(bot)
+            await process_buffers(bot)
+            await process_economic_calendar(bot)
+        except Exception as e:
+            logging.error(f"❌ Test Error: {e}")
+            import traceback
+            traceback.print_exc()
+        logging.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        logging.info("✅ TEST RUN COMPLETE — set TEST_MODE=false for production")
+        return  # Exit after single run
+
+    # --- PRODUCTION MODE ---
+    logging.info("🚀 Bot Started — ForexNewsAPI + RSS Hybrid Mode (PRODUCTION)")
 
     loop_count = 0
     calendar_interval = 10  # Check calendar every 10 loops (10 minutes)
