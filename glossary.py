@@ -200,3 +200,13 @@ GLOSSARY = {
     "alliance": "isbahaysi",
     "nato": "gaashaanbuurta NATO",
 }
+
+"interest rate": "heerka dulsaar",
+"interest rates": "heerarka dulsaar",
+"interest rate expectations": "filashooyinka heerka dulsaar",
+"interest rate probability": "suurtagalnimada isbeddelka heerka dulsaar",
+"rate cut": "dhimista heerka dulsaar",
+"rate hike": "kor u qaadista heerka dulsaar",
+"rate cuts": "dhimista heerarka dulsaar",
+"rate hikes": "kor u qaadista heerarka dulsaar",
+"policy rate": "heerka dulsaar ee siyaasadda",
