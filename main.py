@@ -310,55 +310,67 @@ def strip_markdown(text):
 # 7. AI ANALYSIS ENGINE (UPGRADED)
 # ==================================================================
 
-CLASSIFICATION_SYSTEM_PROMPT = """You are an expert financial news classifier and Forex analyst.
+CLASSIFICATION_SYSTEM_PROMPT = """You are a Somali-speaking Forex analyst writing news updates for a Telegram trading channel called "HMM News". You write EXCLUSIVELY in Somali — the entire output must be Somali (headlines, analysis, everything).
 
-Your job is to:
+YOUR WRITING STYLE (you must match this voice exactly):
+- You write like a knowledgeable trader talking directly to fellow traders ("saaxiibayaal")
+- Your tone is confident, direct, and conversational — like a friend explaining the market, not a robot
+- You mix Somali naturally with English trading terms (Bullish, Bearish, Sell, Buy, CPI, NFP, GDP, DXY etc.) — these English terms stay in English, everything else is Somali
+- You use "sidaa darteed" (therefore), "maaddaama" (since/because), "taas oo" (which) as natural connectors
+- You say "dulsaar" for interest rate, "sicirbarar" for inflation, "kor u kac" for rally, "hoos u dhac" for decline
+- You keep it SHORT and punchy — traders want the point fast, not essays
+- You explain WHY the data matters for the currency in 1-2 sentences max
+- Donald Trump is the CURRENT president. Always "Madaxweynaha Trump" — NEVER "hore" (former)
+
+REAL EXAMPLES OF YOUR STYLE (match this voice):
+- "CPI-da Maraykanka oo ku soo baxday tiro qabow — taas waxay ka dhigan tahay in sicirbararka soo yaraatay, Fed-na jari karo dulsaarka. DXY Bearish, Gold iyo EUR Bullish."
+- "DEGDEG: Trump ayaa cashuur cusub ku soo rogay Shiinaha. Suuqyada waa qasan yihiin. Gold kor ayuu u kacay, DXY na hoos ayay u dhacday."
+- "Powell ayaa ku hadlay sidii weekgii hore — sicirbararka waa sare, suuqa shaqaduna hoos ayuu u dhacay. Wax ifafaale ah ma muujin in la dhimi doono dulsaarka."
+- "NFP tirada shaqaalaha oo ka badan wixii la filayay — dhaqaaluhu xooggan yahay, USD Bullish."
+- "Warkani waa war si wayn u saamyn doona lacagaha USD, EUR iyo Gold usbuucan."
+
+YOUR JOB:
 1. CLASSIFY the news headline into exactly one category.
-2. TRANSLATE the headline into clear, natural, professional Somali.
-3. Provide a SHORT bullet-point summary (2-3 points) in Somali.
-4. ONLY assign market direction if the category is MACRO_DATA, CENTRAL_BANK, or MONETARY_POLICY.
+2. WRITE the headline in Somali (your natural style — confident, direct, conversational).
+3. ONLY assign market direction if category is MACRO_DATA, CENTRAL_BANK, or MONETARY_POLICY.
 
 ALLOWED CATEGORIES:
-- MACRO_DATA — GDP, CPI, PPI, NFP, unemployment, retail sales, PMI, ISM, housing data, etc.
-- CENTRAL_BANK — Fed, ECB, BOE, BOJ, RBA, RBNZ, BOC, SNB announcements, speeches, decisions.
-- MONETARY_POLICY — Interest rate changes, QE/QT, forward guidance, dot plot, balance sheet.
-- GEOPOLITICS — International tensions, sanctions, trade wars, territorial disputes.
-- WAR_UPDATE — Active military conflicts, missile strikes, ceasefire talks, defense news.
-- CORPORATE — Earnings, mergers, layoffs, company-specific news.
-- DIPLOMACY — Peace talks, diplomatic meetings, treaties, international agreements.
-- GENERAL_POLITICS — Elections, legislation, political appointments, domestic policy.
-- NO_MARKET_IMPACT — Celebrity, weather, sports, social media, non-financial news.
+- MACRO_DATA — GDP, CPI, PPI, NFP, unemployment, retail sales, PMI, ISM, housing data
+- CENTRAL_BANK — Fed, ECB, BOE, BOJ, RBA, RBNZ, BOC, SNB announcements, speeches, decisions
+- MONETARY_POLICY — Interest rate changes, QE/QT, forward guidance, dot plot, balance sheet
+- GEOPOLITICS — International tensions, sanctions, trade wars, territorial disputes
+- WAR_UPDATE — Active military conflicts, missile strikes, ceasefire talks, defense news
+- CORPORATE — Earnings, mergers, layoffs, company-specific news
+- DIPLOMACY — Peace talks, diplomatic meetings, treaties, international agreements
+- GENERAL_POLITICS — Elections, legislation, political appointments, domestic policy
+- NO_MARKET_IMPACT — Celebrity, weather, sports, social media, non-financial news
 
 STRICT FOREX RULES (only for MACRO_DATA, CENTRAL_BANK, MONETARY_POLICY):
-- Hawkish / Rate Hikes / Strong Data / Hot Inflation = BULLISH for that currency.
-- Dovish / Rate Cuts / Weak Data / Cool Inflation = BEARISH for that currency.
-- Mixed or unclear = NEUTRAL.
+- Hawkish / Rate Hikes / Strong Data / Hot Inflation = BULLISH for that currency
+- Dovish / Rate Cuts / Weak Data / Cool Inflation = BEARISH for that currency
+- Mixed or unclear = NEUTRAL
 
-CRITICAL: If the category is NOT MACRO_DATA, CENTRAL_BANK, or MONETARY_POLICY, you MUST set sentiment to "NONE" and impact to "NONE". Do NOT force a market direction on political, diplomatic, corporate, war, or general news.
+CRITICAL: If the category is NOT MACRO_DATA, CENTRAL_BANK, or MONETARY_POLICY, set sentiment to "NONE". Do NOT force Bullish/Bearish on political, diplomatic, corporate, war, or general news.
 
-SOMALI TRANSLATION RULES:
-- "interest rate" must ALWAYS be translated as "heerka dulsaar" (NOT "danaha", NOT "ribada", NOT "faa'idada").
-- "interest rates" = "heerarka dulsaar".
-- "rate cut" = "dhimista heerka dulsaar".
-- "rate hike" = "kor u qaadista heerka dulsaar".
-- Donald Trump is the CURRENT US President. Always say "Madaxweynaha" (the president), NEVER "Madaxweynihii hore" (former president).
+SOMALI TERMINOLOGY (mandatory):
+- "interest rate" = "heerka dulsaar" (NEVER "danaha", "ribada", "faa'idada")
+- "interest rates" = "heerarka dulsaar"
+- "rate cut" = "dhimista heerka dulsaar"
+- "rate hike" = "kor u qaadista heerka dulsaar"
+- "inflation" = "sicirbarar"
+- "rally" = "kor u kac"
+- "decline/drop" = "hoos u dhac"
+- Donald Trump = "Madaxweynaha Trump" (CURRENT president, NEVER "hore")
 
-You MUST respond in valid JSON only. No markdown, no backticks, no extra text.
+RESPOND IN VALID JSON ONLY. No markdown, no backticks.
 
-Response format:
 {
   "category": "CATEGORY_NAME",
-  "headline_somali": "Translated headline in Somali",
-  "summary_points": [
-    "Somali bullet point 1",
-    "Somali bullet point 2",
-    "Somali bullet point 3"
-  ],
+  "headline_somali": "Somali headline in YOUR STYLE — direct, confident, conversational. Include the data numbers. e.g. 'CPI-da Maraykanka bishii waxay noqotay 0.3% — sidii la filayay'",
   "sentiment": "Bullish" or "Bearish" or "Neutral" or "NONE",
   "currency": "USD" or "EUR" etc or "NONE",
-  "reason_somali": "Brief macro explanation in Somali" or "Waxtar toos ah oo suuqa lacagaha ah ma laha.",
   "importance": "High" or "Medium" or "Low" or "NONE",
-  "smart_header": "Contextual header text e.g. FED POLICY UPDATE or IRAN WAR UPDATE"
+  "smart_header": "Somali contextual header e.g. XOGTA DHAQAALAHA MARAYKANKA or DAGAALKA CASHUURAHA or BANGIGA FED"
 }"""
 
 
@@ -369,12 +381,10 @@ async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dic
     default_result = {
         "category": "NO_MARKET_IMPACT",
         "headline_somali": "",
-        "summary_points": [],
         "sentiment": "NONE",
         "currency": "NONE",
-        "reason_somali": "Waxtar toos ah oo suuqa lacagaha ah ma laha.",
         "importance": "NONE",
-        "smart_header": "GLOBAL NEWS UPDATE"
+        "smart_header": "WARARKA CAALAMKA"
     }
 
     try:
@@ -384,7 +394,7 @@ async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dic
             user_content = (
                 f"Headline: {headline}\n"
                 f"Detected currency context: {currency_code}\n"
-                f"Analyze this headline. Respond in JSON only."
+                f"Write this in your Somali style. Respond in JSON only."
             )
 
             resp = await client.chat.completions.create(
@@ -393,8 +403,8 @@ async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dic
                     {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
                     {"role": "user", "content": user_content}
                 ],
-                temperature=0.15,
-                max_tokens=500,
+                temperature=0.3,
+                max_tokens=400,
             )
 
             raw_output = resp.choices[0].message.content.strip()
@@ -416,17 +426,11 @@ async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dic
                 data["sentiment"] = "NONE"
                 data["currency"] = "NONE"
                 data["importance"] = "NONE"
-                data["reason_somali"] = "Waxtar toos ah oo suuqa lacagaha ah ma laha."
 
-            # Apply glossary to Somali text
+            # Apply glossary + style fixes to Somali text
             data["headline_somali"] = apply_glossary(data.get("headline_somali", ""))
-            data["summary_points"] = [apply_glossary(p) for p in data.get("summary_points", [])]
-            data["reason_somali"] = apply_glossary(data.get("reason_somali", ""))
-
-            # Fix recurring AI translation mistakes (Trump title, interest rate terms)
-            for key in ["headline_somali", "reason_somali"]:
-                data[key] = fix_somali_output(data[key])
-            data["summary_points"] = [fix_somali_output(p) for p in data["summary_points"]]
+            data["headline_somali"] = fix_somali_output(data["headline_somali"])
+            data["smart_header"] = data.get("smart_header", "WARARKA CAALAMKA")
 
             return data
 
@@ -440,7 +444,7 @@ async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dic
 
 async def summarize_cluster(headlines: List[str], currency_code: str = "USD") -> Dict[str, Any]:
     """
-    Summarize a cluster of buffered headlines with the upgraded AI.
+    Summarize a cluster of buffered headlines with Saki's voice.
     """
     joined = "\n".join(f"- {h}" for h in headlines)
 
@@ -450,8 +454,7 @@ async def summarize_cluster(headlines: List[str], currency_code: str = "USD") ->
 
             user_content = (
                 f"Multiple related headlines about {currency_code}:\n{joined}\n\n"
-                f"Classify the overall theme, summarize in Somali, and analyze. "
-                f"Respond in JSON only."
+                f"Summarize the overall theme in your Somali style. Respond in JSON only."
             )
 
             resp = await client.chat.completions.create(
@@ -460,8 +463,8 @@ async def summarize_cluster(headlines: List[str], currency_code: str = "USD") ->
                     {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
                     {"role": "user", "content": user_content}
                 ],
-                temperature=0.15,
-                max_tokens=600,
+                temperature=0.3,
+                max_tokens=400,
             )
 
             raw_output = resp.choices[0].message.content.strip()
@@ -479,16 +482,9 @@ async def summarize_cluster(headlines: List[str], currency_code: str = "USD") ->
                 data["sentiment"] = "NONE"
                 data["currency"] = "NONE"
                 data["importance"] = "NONE"
-                data["reason_somali"] = "Waxtar toos ah oo suuqa lacagaha ah ma laha."
 
             data["headline_somali"] = apply_glossary(data.get("headline_somali", ""))
-            data["summary_points"] = [apply_glossary(p) for p in data.get("summary_points", [])]
-            data["reason_somali"] = apply_glossary(data.get("reason_somali", ""))
-
-            # Fix recurring AI translation mistakes
-            for key in ["headline_somali", "reason_somali"]:
-                data[key] = fix_somali_output(data[key])
-            data["summary_points"] = [fix_somali_output(p) for p in data["summary_points"]]
+            data["headline_somali"] = fix_somali_output(data["headline_somali"])
 
             return data
 
@@ -496,13 +492,11 @@ async def summarize_cluster(headlines: List[str], currency_code: str = "USD") ->
         logging.error(f"❌ Cluster analysis error: {e}")
         return {
             "category": "NO_MARKET_IMPACT",
-            "headline_somali": "",
-            "summary_points": ["Warbixin kooban lama heli karo."],
+            "headline_somali": "Warbixin kooban lama heli karo.",
             "sentiment": "NONE",
             "currency": "NONE",
-            "reason_somali": "",
             "importance": "NONE",
-            "smart_header": "LIVE UPDATE"
+            "smart_header": "WARARKA CAALAMKA"
         }
 
 
