@@ -137,14 +137,11 @@ GLOSSARY = {
     # ---------------------------------------------------------
     # FOREX MARKETS (FX)
     # ---------------------------------------------------------
-    "usd": "doollar mareykanka",
-    "eur": "yuuro",
-    "jpy": "yen-ka japan",
-    "gbp": "gini ingiriis",
-    "chf": "faransiiska swiss-ka",
-    "cad": "doollar kanada",
-    "aud": "doollar australiya",
-    "nzd": "doollar new zealand",
+    # NOTE: Currency codes (USD, EUR, CAD, etc.) are intentionally NOT
+    # in this glossary. They are handled separately by apply_currency_codes()
+    # in main.py with case-sensitive matching, because lowercase "cad"
+    # collides with the Somali word "cad" (white/clear) and "usd"/"eur"
+    # are already universal trading terms that should stay as-is.
     "safe haven currency": "lacagta badbaadada lagu aado",
     "currency depreciation": "hoos u dhaca qiimaha lacagta",
     "currency appreciation": "kor u kaca qiimaha lacagta",
