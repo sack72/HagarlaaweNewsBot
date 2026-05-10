@@ -80,6 +80,31 @@ VALID_CATEGORIES = {
     "DIPLOMACY", "GENERAL_POLITICS", "NO_MARKET_IMPACT"
 }
 
+# Whitelist of assets the AI may flag in impacts[]
+VALID_ASSETS = {
+    "Gold", "DXY", "Equities", "Crypto", "Oil",
+    "USD", "EUR", "JPY", "GBP", "CHF", "CAD", "AUD", "NZD", "CNH"
+}
+VALID_DIRECTIONS = {"Bullish", "Bearish", "Neutral"}
+
+# Asset → emoji for compact display
+ASSET_EMOJI = {
+    "Gold":     "🥇",
+    "DXY":      "💵",
+    "Equities": "📈",
+    "Crypto":   "₿",
+    "Oil":      "🛢️",
+    "USD":      "🇺🇸",
+    "EUR":      "🇪🇺",
+    "JPY":      "🇯🇵",
+    "GBP":      "🇬🇧",
+    "CHF":      "🇨🇭",
+    "CAD":      "🇨🇦",
+    "AUD":      "🇦🇺",
+    "NZD":      "🇳🇿",
+    "CNH":      "🇨🇳",
+}
+
 # Category → smart header mapping
 CATEGORY_HEADERS = {
     "MACRO_DATA":        "📊 ECONOMIC DATA UPDATE",
@@ -256,11 +281,75 @@ def clean_title(t):
 
 
 def apply_glossary(text):
-    text = re.sub(r"Aqalka Cad", "AQALKA_TEMP_PLACEHOLDER", text, flags=re.IGNORECASE)
+    # Protect Somali phrases that contain words colliding with English glossary keys.
+    # "Cad" (white/clear) collides with CAD currency; "Aqalka Cad" must survive intact.
+    protected = [
+        (r"Aqalka\s+Cad", "AQALKA_TEMP_PLACEHOLDER"),
+        (r"\bsi\s+cad\b", "SI_CAD_TEMP_PLACEHOLDER"),       # "clearly"
+        (r"\bsi\s+cadi?\b", "SI_CADI_TEMP_PLACEHOLDER"),     # "clearly" variant
+        (r"\bmid\s+cad\b", "MID_CAD_TEMP_PLACEHOLDER"),      # "a clear one"
+    ]
+    for pat, placeholder in protected:
+        text = re.sub(pat, placeholder, text, flags=re.IGNORECASE)
+
     for eng, som in GLOSSARY.items():
         pattern = re.compile(r"\b" + re.escape(eng) + r"\b", re.IGNORECASE)
         text = pattern.sub(som, text)
+
+    # Restore protected phrases
     text = text.replace("AQALKA_TEMP_PLACEHOLDER", "Aqalka Cad")
+    text = text.replace("SI_CAD_TEMP_PLACEHOLDER", "si cad")
+    text = text.replace("SI_CADI_TEMP_PLACEHOLDER", "si cad")
+    text = text.replace("MID_CAD_TEMP_PLACEHOLDER", "mid cad")
+    return text
+
+
+# Currency codes handled SEPARATELY with case-sensitive matching.
+# Only UPPERCASE ticker symbols get translated — lowercase forms are
+# either Somali words ("cad" = white) or unrelated tokens.
+CURRENCY_CODE_MAP = {
+    "USD": "doollar Mareykanka",
+    "EUR": "yuuro",
+    "JPY": "yen-ka Japan",
+    "GBP": "gini Ingiriis",
+    "CHF": "franka Swiss-ka",
+    "CAD": "doollar Kanada",
+    "AUD": "doollar Australia",
+    "NZD": "doollar New Zealand",
+}
+
+
+def apply_currency_codes(text):
+    """
+    Replace UPPERCASE currency tickers with Somali names.
+    Case-sensitive on purpose: 'CAD' becomes 'doollar Kanada',
+    but lowercase 'cad' (Somali for 'white/clear') is left alone.
+    Skips common trading terms (XAUUSD, EURUSD, DXY, etc.) where
+    currency codes are part of an instrument name.
+    """
+    # Protect compound trading instruments first (XAUUSD, EURUSD, USDJPY...)
+    # so we don't mangle them
+    instrument_pattern = re.compile(
+        r"\b([A-Z]{3,6}/?[A-Z]{0,4})\b"
+    )
+    instruments = []
+    def stash_instrument(m):
+        token = m.group(0)
+        # only stash if it actually contains a currency code AND is compound
+        if len(token) >= 6 or "/" in token or token in {"DXY", "VIX"}:
+            instruments.append(token)
+            return f"__INSTR_{len(instruments)-1}__"
+        return token
+    text = instrument_pattern.sub(stash_instrument, text)
+
+    # Now replace standalone uppercase codes
+    for code, som in CURRENCY_CODE_MAP.items():
+        text = re.sub(r"\b" + code + r"\b", som, text)
+
+    # Restore instruments
+    for i, inst in enumerate(instruments):
+        text = text.replace(f"__INSTR_{i}__", inst)
+
     return text
 
 
@@ -332,7 +421,7 @@ REAL EXAMPLES OF YOUR STYLE (match this voice):
 YOUR JOB:
 1. CLASSIFY the news headline into exactly one category.
 2. WRITE the headline in Somali (your natural style — confident, direct, conversational).
-3. ONLY assign market direction if category is MACRO_DATA, CENTRAL_BANK, or MONETARY_POLICY.
+3. For MARKET-RELEVANT news, identify ALL affected assets (Gold, DXY, Equities, Crypto, FX pairs) — not just one currency.
 
 ALLOWED CATEGORIES:
 - MACRO_DATA — GDP, CPI, PPI, NFP, unemployment, retail sales, PMI, ISM, housing data
@@ -345,12 +434,37 @@ ALLOWED CATEGORIES:
 - GENERAL_POLITICS — Elections, legislation, political appointments, domestic policy
 - NO_MARKET_IMPACT — Celebrity, weather, sports, social media, non-financial news
 
-STRICT FOREX RULES (only for MACRO_DATA, CENTRAL_BANK, MONETARY_POLICY):
+MARKET IMPACT RULES — apply broadly across asset classes:
+
+CURRENCY (FX) effects:
 - Hawkish / Rate Hikes / Strong Data / Hot Inflation = BULLISH for that currency
 - Dovish / Rate Cuts / Weak Data / Cool Inflation = BEARISH for that currency
-- Mixed or unclear = NEUTRAL
 
-CRITICAL: If the category is NOT MACRO_DATA, CENTRAL_BANK, or MONETARY_POLICY, set sentiment to "NONE". Do NOT force Bullish/Bearish on political, diplomatic, corporate, war, or general news.
+GOLD (XAUUSD):
+- Bullish on: risk-off, war escalation, weaker USD, dovish Fed, geopolitical tension, sanctions, trade wars
+- Bearish on: stronger USD, hawkish Fed, risk-on rallies, peace deals, strong US data
+
+DXY (US Dollar Index):
+- Bullish on: hawkish Fed, strong US data, risk-off safe-haven flows, tariffs hitting other economies
+- Bearish on: dovish Fed, weak US data, US-specific political crisis
+
+EQUITIES (SPX / NDX / global stocks):
+- Bullish on: rate cuts, risk-on, peace deals, strong earnings, trade deals
+- Bearish on: rate hikes, war, recession fears, tariffs, geopolitical shocks
+
+CRYPTO (BTC / ETH):
+- Correlates with risk-on equities AND weak USD / dovish Fed
+- Bullish on: risk-on, dovish Fed, weak USD, institutional adoption
+- Bearish on: risk-off panic, regulatory crackdowns, hawkish Fed
+
+GEOPOLITICAL / TRADE / WAR news ALWAYS has market impact even without macro data:
+- Trump-China meetings, tariffs, sanctions → Gold, DXY, Equities, CNH, AUD all move
+- War escalation → Gold UP, Equities DOWN, Oil UP, safe-haven FX (USD/CHF/JPY) UP
+- Peace talks / ceasefires → Gold DOWN, Equities UP, risk-on
+- Rare-earth / commodity deals → mining stocks, AUD, related FX
+
+Use NO_MARKET_IMPACT ONLY for genuinely non-financial news (celebrity, sports, weather).
+For ALL other news with any market relevance, populate "impacts" with at least one asset.
 
 SOMALI TERMINOLOGY (mandatory):
 - "interest rate" = "heerka dulsaar" (NEVER "danaha", "ribada", "faa'idada")
@@ -361,17 +475,26 @@ SOMALI TERMINOLOGY (mandatory):
 - "rally" = "kor u kac"
 - "decline/drop" = "hoos u dhac"
 - Donald Trump = "Madaxweynaha Trump" (CURRENT president, NEVER "hore")
+- "White House" = "Aqalka Cad" (NEVER translate "Cad" as a currency)
 
 RESPOND IN VALID JSON ONLY. No markdown, no backticks.
 
 {
   "category": "CATEGORY_NAME",
-  "headline_somali": "Somali headline in YOUR STYLE — direct, confident, conversational. Include the data numbers. e.g. 'CPI-da Maraykanka bishii waxay noqotay 0.3% — sidii la filayay'",
-  "sentiment": "Bullish" or "Bearish" or "Neutral" or "NONE",
-  "currency": "USD" or "EUR" etc or "NONE",
+  "headline_somali": "Somali headline in YOUR STYLE — direct, confident, conversational. Include data numbers when present.",
   "importance": "High" or "Medium" or "Low" or "NONE",
-  "smart_header": "Somali contextual header e.g. XOGTA DHAQAALAHA MARAYKANKA or DAGAALKA CASHUURAHA or BANGIGA FED"
-}"""
+  "smart_header": "Somali contextual header e.g. XOGTA DHAQAALAHA MARAYKANKA or DAGAALKA CASHUURAHA or BANGIGA FED",
+  "impacts": [
+    {"asset": "Gold",     "direction": "Bullish"},
+    {"asset": "DXY",      "direction": "Bearish"},
+    {"asset": "Equities", "direction": "Bearish"},
+    {"asset": "USD",      "direction": "Bearish"}
+  ]
+}
+
+ASSET NAMES allowed in "impacts": Gold, DXY, Equities, Crypto, Oil, USD, EUR, JPY, GBP, CHF, CAD, AUD, NZD, CNH
+DIRECTION allowed: Bullish, Bearish, Neutral
+If category is NO_MARKET_IMPACT, return "impacts": []."""
 
 
 async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dict[str, Any]:
@@ -381,10 +504,9 @@ async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dic
     default_result = {
         "category": "NO_MARKET_IMPACT",
         "headline_somali": "",
-        "sentiment": "NONE",
-        "currency": "NONE",
         "importance": "NONE",
-        "smart_header": "WARARKA CAALAMKA"
+        "smart_header": "WARARKA CAALAMKA",
+        "impacts": []
     }
 
     try:
@@ -394,7 +516,8 @@ async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dic
             user_content = (
                 f"Headline: {headline}\n"
                 f"Detected currency context: {currency_code}\n"
-                f"Write this in your Somali style. Respond in JSON only."
+                f"Write this in your Somali style. List ALL affected assets in 'impacts'. "
+                f"Respond in JSON only."
             )
 
             resp = await client.chat.completions.create(
@@ -404,7 +527,7 @@ async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dic
                     {"role": "user", "content": user_content}
                 ],
                 temperature=0.3,
-                max_tokens=400,
+                max_tokens=500,
             )
 
             raw_output = resp.choices[0].message.content.strip()
@@ -421,14 +544,26 @@ async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dic
                 cat = "NO_MARKET_IMPACT"
             data["category"] = cat
 
-            # ENFORCE: Non-macro categories must NOT have market signals
-            if cat not in MARKET_SIGNAL_CATEGORIES:
-                data["sentiment"] = "NONE"
-                data["currency"] = "NONE"
-                data["importance"] = "NONE"
+            # Validate / sanitize impacts
+            impacts = data.get("impacts", [])
+            if not isinstance(impacts, list):
+                impacts = []
+            clean_impacts = []
+            for imp in impacts:
+                if not isinstance(imp, dict):
+                    continue
+                asset = str(imp.get("asset", "")).strip()
+                direction = str(imp.get("direction", "")).strip().capitalize()
+                if asset in VALID_ASSETS and direction in VALID_DIRECTIONS:
+                    clean_impacts.append({"asset": asset, "direction": direction})
+            # ENFORCE: NO_MARKET_IMPACT category has empty impacts
+            if cat == "NO_MARKET_IMPACT":
+                clean_impacts = []
+            data["impacts"] = clean_impacts
 
             # Apply glossary + style fixes to Somali text
             data["headline_somali"] = apply_glossary(data.get("headline_somali", ""))
+            data["headline_somali"] = apply_currency_codes(data["headline_somali"])
             data["headline_somali"] = fix_somali_output(data["headline_somali"])
             data["smart_header"] = data.get("smart_header", "WARARKA CAALAMKA")
 
@@ -454,7 +589,8 @@ async def summarize_cluster(headlines: List[str], currency_code: str = "USD") ->
 
             user_content = (
                 f"Multiple related headlines about {currency_code}:\n{joined}\n\n"
-                f"Summarize the overall theme in your Somali style. Respond in JSON only."
+                f"Summarize the overall theme in your Somali style. "
+                f"List ALL affected assets in 'impacts'. Respond in JSON only."
             )
 
             resp = await client.chat.completions.create(
@@ -464,7 +600,7 @@ async def summarize_cluster(headlines: List[str], currency_code: str = "USD") ->
                     {"role": "user", "content": user_content}
                 ],
                 temperature=0.3,
-                max_tokens=400,
+                max_tokens=500,
             )
 
             raw_output = resp.choices[0].message.content.strip()
@@ -478,12 +614,24 @@ async def summarize_cluster(headlines: List[str], currency_code: str = "USD") ->
                 cat = "NO_MARKET_IMPACT"
             data["category"] = cat
 
-            if cat not in MARKET_SIGNAL_CATEGORIES:
-                data["sentiment"] = "NONE"
-                data["currency"] = "NONE"
-                data["importance"] = "NONE"
+            # Validate impacts
+            impacts = data.get("impacts", [])
+            if not isinstance(impacts, list):
+                impacts = []
+            clean_impacts = []
+            for imp in impacts:
+                if not isinstance(imp, dict):
+                    continue
+                asset = str(imp.get("asset", "")).strip()
+                direction = str(imp.get("direction", "")).strip().capitalize()
+                if asset in VALID_ASSETS and direction in VALID_DIRECTIONS:
+                    clean_impacts.append({"asset": asset, "direction": direction})
+            if cat == "NO_MARKET_IMPACT":
+                clean_impacts = []
+            data["impacts"] = clean_impacts
 
             data["headline_somali"] = apply_glossary(data.get("headline_somali", ""))
+            data["headline_somali"] = apply_currency_codes(data["headline_somali"])
             data["headline_somali"] = fix_somali_output(data["headline_somali"])
 
             return data
@@ -493,10 +641,9 @@ async def summarize_cluster(headlines: List[str], currency_code: str = "USD") ->
         return {
             "category": "NO_MARKET_IMPACT",
             "headline_somali": "Warbixin kooban lama heli karo.",
-            "sentiment": "NONE",
-            "currency": "NONE",
             "importance": "NONE",
-            "smart_header": "WARARKA CAALAMKA"
+            "smart_header": "WARARKA CAALAMKA",
+            "impacts": []
         }
 
 
@@ -508,10 +655,12 @@ def format_message(analysis: Dict[str, Any], flag: str = "", impact_dot: str = "
     """
     Build a clean, compact message: news first, no headline header.
     High-impact news starts with 'DegDeg:', others start directly.
+    Market impact line lists ALL affected assets (Gold, DXY, Equities, FX, Crypto).
     """
     category = analysis.get("category", "NO_MARKET_IMPACT")
     headline_som = analysis.get("headline_somali", "")
     importance = analysis.get("importance", "NONE")
+    impacts = analysis.get("impacts", []) or []
 
     lines = []
 
@@ -523,26 +672,36 @@ def format_message(analysis: Dict[str, Any], flag: str = "", impact_dot: str = "
         if headline_som:
             lines.append(f"{flag} {headline_som}".strip())
 
-    # Market impact line — compact
-    if category in MARKET_SIGNAL_CATEGORIES and analysis.get("sentiment") not in ("NONE", None, ""):
-        sentiment = analysis.get("sentiment", "Neutral")
-        currency = analysis.get("currency", "USD")
+    # Multi-asset impact line
+    if impacts:
+        parts = []
+        for imp in impacts:
+            asset = imp.get("asset", "")
+            direction = imp.get("direction", "Neutral")
+            if direction == "Bullish":
+                arrow = "📈"
+            elif direction == "Bearish":
+                arrow = "📉"
+            else:
+                arrow = "⚖️"
+            emoji = ASSET_EMOJI.get(asset, "")
+            parts.append(f"{emoji} {asset} {arrow} {direction}".strip())
 
-        if "Bullish" in sentiment:
-            sent_emoji = "📈"
-        elif "Bearish" in sentiment:
-            sent_emoji = "📉"
-        else:
-            sent_emoji = "⚖️"
-
+        # Importance dot
         if importance == "High":
             imp_emoji = "🔴"
         elif importance == "Medium":
             imp_emoji = "🟠"
-        else:
+        elif importance == "Low":
             imp_emoji = "🟡"
+        else:
+            imp_emoji = ""
 
-        lines.append(f"\n📊 {currency} {sent_emoji} {sentiment} | {importance} {imp_emoji}")
+        impact_block = "\n📊 Saameynta Suuqa:"
+        if imp_emoji:
+            impact_block += f" {imp_emoji}"
+        impact_block += "\n" + "\n".join(f"  • {p}" for p in parts)
+        lines.append(impact_block)
     else:
         lines.append(f"\n📊 Saameynta Suuqa: Midna")
 
