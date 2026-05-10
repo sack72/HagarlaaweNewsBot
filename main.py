@@ -85,7 +85,7 @@ VALID_ASSETS = {
     "Gold", "DXY", "Equities", "Crypto", "Oil",
     "USD", "EUR", "JPY", "GBP", "CHF", "CAD", "AUD", "NZD", "CNH"
 }
-VALID_DIRECTIONS = {"Bullish", "Bearish", "Neutral"}
+VALID_DIRECTIONS = {"Bullish", "Bearish"}  # Neutral dropped: if unclear, omit the asset entirely
 
 # Asset → emoji for compact display
 ASSET_EMOJI = {
@@ -434,37 +434,62 @@ ALLOWED CATEGORIES:
 - GENERAL_POLITICS — Elections, legislation, political appointments, domestic policy
 - NO_MARKET_IMPACT — Celebrity, weather, sports, social media, non-financial news
 
-MARKET IMPACT RULES — apply broadly across asset classes:
+MARKET IMPACT RULES — be STRICT and CONSERVATIVE:
 
-CURRENCY (FX) effects:
-- Hawkish / Rate Hikes / Strong Data / Hot Inflation = BULLISH for that currency
-- Dovish / Rate Cuts / Weak Data / Cool Inflation = BEARISH for that currency
+⚠️ CRITICAL: ONLY list an asset in "impacts" when the directional bias is CLEAR, STRONG, and HIGH-CONFIDENCE.
+- Weak data, mixed signals, ambiguous news, vague speeches, "talks scheduled", "may discuss" → DO NOT list any asset
+- Soft hints, low-importance announcements, routine diplomatic visits → DO NOT list any asset
+- Speculation about future possibilities (e.g. "may visit", "might sign") → DO NOT list any asset
+- If you are unsure whether the impact is real and strong, LEAVE IT OUT
+- It is FAR BETTER to return "impacts": [] than to publish weak/uncertain signals
 
-GOLD (XAUUSD):
-- Bullish on: risk-off, war escalation, weaker USD, dovish Fed, geopolitical tension, sanctions, trade wars
-- Bearish on: stronger USD, hawkish Fed, risk-on rallies, peace deals, strong US data
+A trader will ACT on this list. Wrong signals lose them money. Stay silent unless certain.
 
-DXY (US Dollar Index):
-- Bullish on: hawkish Fed, strong US data, risk-off safe-haven flows, tariffs hitting other economies
-- Bearish on: dovish Fed, weak US data, US-specific political crisis
+ONLY list an asset when:
+1. The news has CLEAR directional cause-and-effect on that asset
+2. The move is likely to be MEANINGFUL (not just noise)
+3. You are HIGH CONFIDENCE based on the rules below
 
-EQUITIES (SPX / NDX / global stocks):
-- Bullish on: rate cuts, risk-on, peace deals, strong earnings, trade deals
-- Bearish on: rate hikes, war, recession fears, tariffs, geopolitical shocks
+CURRENCY (FX) — only on CLEAR macro/policy events:
+- Strong Hawkish (rate hike, hot CPI well above forecast) = BULLISH for that currency
+- Strong Dovish (rate cut, weak NFP well below forecast) = BEARISH for that currency
+- Speeches, minor data, mixed prints → leave out
 
-CRYPTO (BTC / ETH):
-- Correlates with risk-on equities AND weak USD / dovish Fed
-- Bullish on: risk-on, dovish Fed, weak USD, institutional adoption
-- Bearish on: risk-off panic, regulatory crackdowns, hawkish Fed
+GOLD (XAUUSD) — only on clear catalysts:
+- Major war escalation, confirmed Fed dovish pivot, major risk-off → Bullish
+- Confirmed Fed hawkish pivot, major peace deal, strong risk-on → Bearish
+- Routine diplomatic news, minor headlines → leave out
 
-GEOPOLITICAL / TRADE / WAR news ALWAYS has market impact even without macro data:
-- Trump-China meetings, tariffs, sanctions → Gold, DXY, Equities, CNH, AUD all move
-- War escalation → Gold UP, Equities DOWN, Oil UP, safe-haven FX (USD/CHF/JPY) UP
-- Peace talks / ceasefires → Gold DOWN, Equities UP, risk-on
-- Rare-earth / commodity deals → mining stocks, AUD, related FX
+DXY — only on confirmed Fed / major US data:
+- Confirmed hawkish Fed, strong US data print → Bullish
+- Confirmed dovish Fed, weak US data print → Bearish
+- Political news without clear FX channel → leave out
 
-Use NO_MARKET_IMPACT ONLY for genuinely non-financial news (celebrity, sports, weather).
-For ALL other news with any market relevance, populate "impacts" with at least one asset.
+EQUITIES — only on clear catalysts:
+- Confirmed rate cut, major peace deal, major earnings beat → Bullish
+- Confirmed rate hike, war escalation, major tariff announcement → Bearish
+- Diplomatic visits, scheduled talks, minor news → leave out
+
+CRYPTO — only on direct crypto catalysts or major risk-on/off:
+- Major regulatory clarity, major institutional adoption, clear risk-on → Bullish
+- Major crackdown, major risk-off panic → Bearish
+- Indirect news → leave out
+
+EXAMPLES OF WHAT TO LEAVE EMPTY (return "impacts": []):
+- "Trump arrives in Beijing for talks" → just an arrival, no direction yet
+- "Officials may discuss tariffs" → speculation
+- "Trump and Xi will meet" → meeting hasn't happened
+- "Iran says no plan to apologize" → political posture, no clear market channel
+- "Fed official speaks at conference" → no policy change announced
+
+EXAMPLES OF WHAT TO POPULATE:
+- "Fed cuts rates by 50bp" → DXY Bearish, Gold Bullish, Equities Bullish
+- "CPI prints 0.5% vs 0.2% expected" → USD Bullish, Gold Bearish, DXY Bullish
+- "Trump announces 50% tariff on China imports effective Monday" → Gold Bullish, Equities Bearish, CNH Bearish
+- "Ceasefire signed in Ukraine" → Gold Bearish, Equities Bullish, Oil Bearish
+
+Use NO_MARKET_IMPACT category for genuinely non-financial news (celebrity, sports, weather).
+For news that is financial-adjacent but lacks clear directional signal, use the right category (GEOPOLITICS, DIPLOMACY, etc.) but return "impacts": [].
 
 SOMALI TERMINOLOGY (mandatory):
 - "interest rate" = "heerka dulsaar" (NEVER "danaha", "ribada", "faa'idada")
@@ -493,8 +518,8 @@ RESPOND IN VALID JSON ONLY. No markdown, no backticks.
 }
 
 ASSET NAMES allowed in "impacts": Gold, DXY, Equities, Crypto, Oil, USD, EUR, JPY, GBP, CHF, CAD, AUD, NZD, CNH
-DIRECTION allowed: Bullish, Bearish, Neutral
-If category is NO_MARKET_IMPACT, return "impacts": []."""
+DIRECTION allowed: Bullish, Bearish  (DO NOT use Neutral — if unclear, OMIT the asset entirely)
+Default to "impacts": [] when in doubt. Empty is BETTER than uncertain."""
 
 
 async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dict[str, Any]:
@@ -672,38 +697,40 @@ def format_message(analysis: Dict[str, Any], flag: str = "", impact_dot: str = "
         if headline_som:
             lines.append(f"{flag} {headline_som}".strip())
 
-    # Multi-asset impact line
+    # Multi-asset impact line — ONLY shown when there are high-confidence directional calls.
+    # If nothing is high-confidence, the line is omitted entirely (we don't claim "no impact"
+    # because the news may still affect markets — we just don't have a clear call).
     if impacts:
         parts = []
         for imp in impacts:
             asset = imp.get("asset", "")
-            direction = imp.get("direction", "Neutral")
+            direction = imp.get("direction", "")
             if direction == "Bullish":
                 arrow = "📈"
             elif direction == "Bearish":
                 arrow = "📉"
             else:
-                arrow = "⚖️"
+                continue  # skip anything that isn't a clear directional call
             emoji = ASSET_EMOJI.get(asset, "")
             parts.append(f"{emoji} {asset} {arrow} {direction}".strip())
 
-        # Importance dot
-        if importance == "High":
-            imp_emoji = "🔴"
-        elif importance == "Medium":
-            imp_emoji = "🟠"
-        elif importance == "Low":
-            imp_emoji = "🟡"
-        else:
-            imp_emoji = ""
+        if parts:
+            # Importance dot
+            if importance == "High":
+                imp_emoji = "🔴"
+            elif importance == "Medium":
+                imp_emoji = "🟠"
+            elif importance == "Low":
+                imp_emoji = "🟡"
+            else:
+                imp_emoji = ""
 
-        impact_block = "\n📊 Saameynta Suuqa:"
-        if imp_emoji:
-            impact_block += f" {imp_emoji}"
-        impact_block += "\n" + "\n".join(f"  • {p}" for p in parts)
-        lines.append(impact_block)
-    else:
-        lines.append(f"\n📊 Saameynta Suuqa: Midna")
+            impact_block = "\n📊 Saameynta Suuqa:"
+            if imp_emoji:
+                impact_block += f" {imp_emoji}"
+            impact_block += "\n" + "\n".join(f"  • {p}" for p in parts)
+            lines.append(impact_block)
+        # else: no clear calls → omit the line entirely
 
     return "\n".join(lines)
 
