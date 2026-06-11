@@ -1,0 +1,1556 @@
+import os
+import time
+import re
+import asyncio
+import logging
+import feedparser
+import sys
+import json
+import httpx
+from datetime import datetime, timezone, timedelta
+from telegram import Bot
+from openai import AsyncOpenAI
+from typing import Optional, List, Dict, Any
+
+# --- FIREBASE SETUP ---
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# --- IMPORT GLOSSARY ---
+try:
+    from glossary import GLOSSARY
+except ImportError:
+    logging.error("❌ glossary.py not found!")
+    sys.exit(1)
+
+# --- IMPORT BANNER GENERATOR ---
+try:
+    from banner import generate_banner
+except ImportError:
+    logging.warning("⚠️ banner.py not found — banners disabled.")
+    generate_banner = None
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# ==================================================================
+# 1. INITIALIZE FIREBASE
+# ==================================================================
+try:
+    if not firebase_admin._apps:
+        if os.path.exists("serviceAccountKey.json"):
+            cred = credentials.Certificate("serviceAccountKey.json")
+        else:
+            sys.exit(1)
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    logging.info("✅ Firebase Connected")
+except Exception as e:
+    logging.error(f"❌ Firebase Error: {e}")
+    sys.exit(1)
+
+# ==================================================================
+# 2. ENVIRONMENT VARIABLES
+# ==================================================================
+TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHANNEL_ID   = os.getenv("TELEGRAM_CHANNEL_ID")
+RSS_URLS_RAW          = os.getenv("RTT_RSS_FEED_URL", "")
+OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY")
+FACEBOOK_ACCESS_TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN")
+FACEBOOK_PAGE_ID      = os.getenv("FACEBOOK_PAGE_ID")
+
+# --- MODEL CONFIGURATION ---
+AI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1")
+
+if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, OPENAI_API_KEY]):
+    logging.error("Missing ENV variables.")
+    sys.exit(1)
+
+RSS_URLS = [u.strip() for u in RSS_URLS_RAW.split(",") if u.strip()]
+
+# ==================================================================
+# 3. NEWS CLASSIFICATION CATEGORIES
+# ==================================================================
+
+# Categories that MAY produce market direction signals
+MARKET_SIGNAL_CATEGORIES = {"MACRO_DATA", "CENTRAL_BANK", "MONETARY_POLICY"}
+
+# All valid categories
+VALID_CATEGORIES = {
+    "MACRO_DATA", "CENTRAL_BANK", "MONETARY_POLICY",
+    "GEOPOLITICS", "WAR_UPDATE", "CORPORATE",
+    "DIPLOMACY", "GENERAL_POLITICS", "NO_MARKET_IMPACT"
+}
+
+# Whitelist of assets the AI may flag in impacts[]
+VALID_ASSETS = {
+    "Gold", "DXY", "Equities", "Crypto", "Oil",
+    "USD", "EUR", "JPY", "GBP", "CHF", "CAD", "AUD", "NZD", "CNH"
+}
+VALID_DIRECTIONS = {"Bullish", "Bearish"}  # Neutral dropped: if unclear, omit the asset entirely
+
+# Asset → emoji for compact display
+ASSET_EMOJI = {
+    "Gold":     "🥇",
+    "DXY":      "💵",
+    "Equities": "📈",
+    "Crypto":   "₿",
+    "Oil":      "🛢️",
+    "USD":      "🇺🇸",
+    "EUR":      "🇪🇺",
+    "JPY":      "🇯🇵",
+    "GBP":      "🇬🇧",
+    "CHF":      "🇨🇭",
+    "CAD":      "🇨🇦",
+    "AUD":      "🇦🇺",
+    "NZD":      "🇳🇿",
+    "CNH":      "🇨🇳",
+}
+
+# Category → smart header mapping
+CATEGORY_HEADERS = {
+    "MACRO_DATA":        "📊 ECONOMIC DATA UPDATE",
+    "CENTRAL_BANK":      "🏦 CENTRAL BANK UPDATE",
+    "MONETARY_POLICY":   "💰 MONETARY POLICY UPDATE",
+    "GEOPOLITICS":       "🌍 GEOPOLITICAL UPDATE",
+    "WAR_UPDATE":        "⚔️ WAR & CONFLICT UPDATE",
+    "CORPORATE":         "🏢 CORPORATE NEWS",
+    "DIPLOMACY":         "🤝 DIPLOMATIC UPDATE",
+    "GENERAL_POLITICS":  "🏛️ POLITICAL UPDATE",
+    "NO_MARKET_IMPACT":  "📰 GLOBAL NEWS UPDATE",
+}
+
+# Category → banner background color (RGB)
+CATEGORY_COLORS = {
+    "MACRO_DATA":        (30, 80, 160),     # Blue
+    "CENTRAL_BANK":      (140, 20, 20),     # Dark red
+    "MONETARY_POLICY":   (100, 20, 100),    # Dark purple
+    "GEOPOLITICS":       (90, 50, 140),     # Purple
+    "WAR_UPDATE":        (180, 90, 20),     # Dark orange
+    "CORPORATE":         (40, 100, 60),     # Green
+    "DIPLOMACY":         (50, 90, 130),     # Steel blue
+    "GENERAL_POLITICS":  (80, 80, 100),     # Slate gray
+    "NO_MARKET_IMPACT":  (100, 100, 100),   # Gray
+}
+
+# ==================================================================
+# 4. IMPACT & CURRENCY DETECTION (kept from original)
+# ==================================================================
+RED_FOLDER_KEYWORDS = [
+    "Non-Farm", "NFP", "Unemployment Rate", "CPI", "Interest Rate",
+    "Fed Chair", "FOMC", "ECB President", "BOE Governor", "BOJ Governor",
+    "GDP", "Retail Sales", "Rate Decision", "Statement", "Monetary Policy",
+    "Powell", "Lagarde", "Bailey", "Ueda", "Trump"
+]
+
+ORANGE_FOLDER_KEYWORDS = [
+    "PPI", "Producer Price", "Core PCE", "Consumer Confidence",
+    "Building Permits", "Housing Starts", "ISM", "PMI", "Trade Balance",
+    "JOLTS", "ADP", "Claimant Count", "Zew", "Ifo", "Tankan"
+]
+
+TARGET_CURRENCIES = {
+    "USD": "🇺🇸", "US": "🇺🇸", "Fed": "🇺🇸", "FOMC": "🇺🇸", "Powell": "🇺🇸", "Trump": "🇺🇸",
+    "EUR": "🇪🇺", "Europe": "🇪🇺", "ECB": "🇪🇺", "Lagarde": "🇪🇺",
+    "JPY": "🇯🇵", "Japan": "🇯🇵", "BOJ": "🇯🇵", "Ueda": "🇯🇵",
+    "GBP": "🇬🇧", "UK": "🇬🇧", "BOE": "🇬🇧", "Bailey": "🇬🇧",
+    "CAD": "🇨🇦", "Canada": "🇨🇦", "BOC": "🇨🇦", "Macklem": "🇨🇦",
+    "AUD": "🇦🇺", "Australia": "🇦🇺", "RBA": "🇦🇺", "Bullock": "🇦🇺",
+    "NZD": "🇳🇿", "New Zealand": "🇳🇿", "RBNZ": "🇳🇿", "Orr": "🇳🇿",
+    "CHF": "🇨🇭", "Swiss": "🇨🇭", "SNB": "🇨🇭", "Jordan": "🇨🇭"
+}
+
+CLUSTER_KEYWORDS = [
+    "Speech", "Testimony", "Press Conference", "Meeting Minutes",
+    "Statement", "Trump", "Powell", "Lagarde", "Bailey", "Ueda", "Q&A"
+]
+
+EXCLUSION_KEYWORDS = [
+    "auction", "bid-to-cover", "close", "open",
+    "preview", "review", "summary", "poll", "wrap",
+    # Recurring daily items — not actionable news
+    "interest rate probabilities",
+    "interest rate probability",
+    "rate probabilities",
+]
+
+# ==================================================================
+# 4b. IRAN WAR DETECTION + REGIONAL SKIP FILTER
+# ==================================================================
+# Saki's market thesis: in the current Iran–US–Israel conflict,
+# escalation events drive USD strength (DXY ↑), which pulls Gold DOWN
+# (inverse to DXY), while Oil rallies on supply risk. Hardcode this
+# bias for any Iran war headline so the bot stays consistent with
+# Saki's playbook.
+
+IRAN_PRIMARY = [
+    "iran", "tehran", "iranian", "irgc",
+    "khamenei", "pezeshkian", "ayatollah",
+    "quds force", "revolutionary guard",
+]
+
+# Escalation keywords — when combined with Iran primary, this is a "big" Iran war update
+IRAN_ESCALATION = [
+    "strike", "strikes", "attack", "attacks", "attacked",
+    "missile", "missiles", "drone", "drones",
+    "war", "retaliat", "bomb", "bombed", "explosion",
+    "killed", "assassinat", "nuclear", "enrich",
+    "military operation", "raid", "shelled",
+    "fired", "launched", "tomahawk",
+    "ceasefire", "sanction", "sanctions",
+    "centrifuge", "uranium", "isfahan", "natanz", "fordow",
+]
+
+def _has_keyword(text: str, keywords) -> bool:
+    """Word-boundary match so 'ppi' doesn't fire inside 'shipping' etc."""
+    for k in keywords:
+        if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
+            return True
+    return False
+
+
+def is_iran_war_news(text: str) -> bool:
+    """
+    Returns True only for BIG Iran-war updates:
+    must contain an Iran primary keyword AND an escalation keyword.
+    Small Iran chatter (visits, statements, minor diplomacy) → False.
+    """
+    if not _has_keyword(text, IRAN_PRIMARY):
+        return False
+    if not _has_keyword(text, IRAN_ESCALATION):
+        return False
+    return True
+
+
+# Regional conflicts that are too noisy to post unless directly tied to Iran or US macro.
+# Saki: "keep out other less invested news like Israel Hezbollah, Lebanon, Iraq, Korea."
+SKIP_REGIONAL = [
+    "hezbollah",
+    "lebanon", "lebanese", "beirut",
+    "iraq", "iraqi", "baghdad",
+    "north korea", "south korea", "kim jong",
+    "pyongyang", "seoul",
+    "houthi", "houthis", "yemen", "sanaa",
+    "syria", "syrian", "damascus",
+    "gaza", "hamas", "rafah", "west bank",
+]
+
+# Macro/major-currency anchors that ALWAYS override the regional skip
+MAJOR_MACRO_OVERRIDE = [
+    "fed", "fomc", "powell",
+    "ecb", "lagarde",
+    "boj", "ueda",
+    "boe", "bailey",
+    "cpi", "ppi", "pce", "nfp", "gdp",
+    "rate decision", "interest rate",
+    "trump", "biden", "white house",
+]
+
+def should_skip_regional(text: str) -> bool:
+    """
+    Skip small regional conflicts UNLESS Iran is in the headline
+    OR major macro/US anchors are involved.
+    """
+    if not _has_keyword(text, SKIP_REGIONAL):
+        return False
+    # Don't skip if Iran is involved (let the Iran war handler take over)
+    if _has_keyword(text, IRAN_PRIMARY):
+        return False
+    # Don't skip if major macro / US political anchors are present
+    if _has_keyword(text, MAJOR_MACRO_OVERRIDE):
+        return False
+    return True
+
+
+def apply_iran_war_override(analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Stamp the analysis as a high-priority Iran war update: forced High
+    importance, dedicated banner. The Somali headline from the AI is
+    preserved.
+
+    NOTE: We deliberately do NOT attach a directional market bias here.
+    Headline-driven geopolitical moves are unreliable (a de-escalation /
+    agreement headline can send Gold UP, the opposite of an escalation).
+    Directional bias is reserved for macro data only.
+    """
+    analysis["category"]      = "WAR_UPDATE"
+    analysis["importance"]    = "High"
+    analysis["smart_header"]  = "XIISADDA IRAN IYO MARAYKANKA"
+    analysis["impacts"]       = []      # no directional call on headlines
+    analysis["is_iran_war"]   = True
+    return analysis
+
+
+# ==================================================================
+# 5. BUFFERING & BANNER COUNTER
+# ==================================================================
+news_buffer = {}
+BUFFER_TIMEOUT_SECONDS = 300
+MAX_BUFFER_SIZE = 10
+
+# Banner insertion counter
+post_counter = 0
+BANNER_INTERVAL = 7  # Insert a banner every N posts
+
+# ==================================================================
+# 5b. SESSION SUMMARY SYSTEM (East Africa Time, UTC+3)
+# ==================================================================
+# Posts a bulleted recap of everything since 00:00 EAT at each session
+# open. Every summary is cumulative from 00:00:
+#   • Asian open  03:00  → 00:00–03:00
+#   • London open 10:00  → 00:00–10:00 (includes Asian)
+#   • NY open     15:00  → 00:00–15:00 (includes London + Asian)
+#   • Daily wrap  23:00  → 00:00–23:00 (whole day)
+# State resets at 00:00 EAT (new day). First deployment forces a
+# one-time 24-hour recap.
+
+EAT_TZ = timezone(timedelta(hours=3))  # East Africa Time, no DST
+
+SESSIONS = {
+    "asian":  {"minute": 3 * 60,  "emoji": "🌏", "name": "Furitaanka Aasiya",   "window": "00:00 → 03:00"},
+    "london": {"minute": 10 * 60, "emoji": "🇬🇧", "name": "Furitaanka London",   "window": "00:00 → 10:00"},
+    "ny":     {"minute": 15 * 60, "emoji": "🇺🇸", "name": "Furitaanka New York", "window": "00:00 → 15:00"},
+    "daily":  {"minute": 23 * 60, "emoji": "🌙", "name": "Koobitaanka Maalinta", "window": "00:00 → 23:00"},
+}
+SESSION_SEQUENCE = ["asian", "london", "ny", "daily"]
+
+# Cap how many items we keep / feed to the summarizer
+MAX_SUMMARY_ITEMS = 80
+
+
+def eat_now() -> datetime:
+    """Current time in East Africa Time (UTC+3)."""
+    return datetime.now(EAT_TZ)
+
+
+def eat_today_str() -> str:
+    """Today's date string in EAT, used as the day boundary key."""
+    return eat_now().strftime("%Y-%m-%d")
+
+
+def get_summary_state() -> Dict[str, Any]:
+    """
+    Read the daily summary log. Auto-resets when the EAT date rolls over,
+    which enforces the 'reset once a day at 00:00' rule.
+    """
+    today = eat_today_str()
+    try:
+        doc = db.collection('bot_state').document('daily_summary').get()
+        data = doc.to_dict() if doc.exists else {}
+    except Exception:
+        data = {}
+
+    if data.get("day") != today:
+        # New day → reset everything
+        data = {"day": today, "items": [], "posted_sessions": [], "deploy_done": False}
+
+    data.setdefault("items", [])
+    data.setdefault("posted_sessions", [])
+    data.setdefault("deploy_done", False)
+    return data
+
+
+def save_summary_state(state: Dict[str, Any]):
+    try:
+        db.collection('bot_state').document('daily_summary').set({
+            "day": state.get("day", eat_today_str()),
+            "items": state.get("items", [])[-MAX_SUMMARY_ITEMS:],
+            "posted_sessions": state.get("posted_sessions", []),
+            "deploy_done": state.get("deploy_done", False),
+        }, merge=False)
+    except Exception as e:
+        logging.error(f"❌ Summary state save error: {e}")
+
+
+def log_summary_item(som: str, flag: str = "", importance: str = "Low", iran: bool = False):
+    """
+    Append a posted headline to today's summary log. Called after each
+    live/cluster post so the session recap can pull from it.
+    """
+    som = (som or "").strip()
+    if not som:
+        return
+    try:
+        state = get_summary_state()
+        state["items"].append({
+            "ts": time.time(),
+            "som": som,
+            "flag": flag or "",
+            "imp": importance or "Low",
+            "iran": bool(iran),
+        })
+        save_summary_state(state)
+    except Exception as e:
+        logging.error(f"❌ log_summary_item error: {e}")
+
+
+SUMMARY_SYSTEM_PROMPT = """You are the HMM News Somali market analyst. You receive a list of today's news headlines that were posted to the channel since 00:00 EAT. Produce a SHORT, clean, bulleted recap in Somali.
+
+STRICT RULES:
+- Output ONLY Somali bullet points. Each bullet starts with "• ".
+- MAXIMUM 8 bullets. Merge duplicate or related headlines into a single bullet.
+- Each bullet is ONE short line (max ~15 words). Punchy, trader voice.
+- Keep English trading terms as-is (Gold, Oil, DXY, CPI, NFP, Fed, ECB, Bullish, Bearish).
+- ORDER: Iran / conflict bullets FIRST → then major macro / central bank → then other notable news.
+- The headlines may be English or Somali. ALWAYS output Somali.
+- Donald Trump is the CURRENT president → "Madaxweynaha Trump", never "hore".
+- Use "heerka dulsaar" for interest rate, "sicirbarar" for inflation.
+- Report Iran / conflict news factually (what happened). DO NOT attach any
+  market direction (no "Gold Bearish" etc.) to Iran or headline news — direction
+  is reserved for macro data only.
+- NO header, NO intro, NO closing line. Bullets ONLY.
+- NO markdown bold. Just "• " bullets separated by newlines."""
+
+
+async def build_session_bullets(items: List[Dict[str, Any]]) -> List[str]:
+    """
+    Synthesize the day's logged items into short Somali bullet points via AI.
+    Falls back to a raw list if the AI call fails.
+    """
+    if not items:
+        return ["• Wax war muhiim ah lama diiwaangelin maanta ilaa hadda."]
+
+    recent = items[-MAX_SUMMARY_ITEMS:]
+
+    lines = []
+    for it in recent:
+        marker = "⚔️ " if it.get("iran") else ""
+        lines.append(f"- {marker}{it.get('som', '')}")
+    joined = "\n".join(lines)
+
+    try:
+        async with httpx.AsyncClient(timeout=40.0) as http_client:
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
+            resp = await client.chat.completions.create(
+                model=AI_MODEL,
+                messages=[
+                    {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Today's posted headlines:\n{joined}\n\nWrite the short Somali bullet recap now."}
+                ],
+                temperature=0.4,
+                max_tokens=600,
+            )
+            raw = resp.choices[0].message.content.strip()
+            raw = re.sub(r"^```(?:\w+)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+
+            bullets = []
+            for ln in raw.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                # Normalize any bullet style to "• "
+                ln = re.sub(r"^[\-\*•·]\s*", "", ln)
+                ln = apply_glossary(ln)
+                ln = apply_currency_codes(ln)
+                ln = fix_somali_output(ln)
+                bullets.append(f"• {ln}")
+            if not bullets:
+                raise ValueError("empty AI summary")
+            return bullets[:8]
+    except Exception as e:
+        logging.error(f"❌ Summary AI error: {e}")
+        # Fallback: raw last-10 bullets (no directional bias)
+        fallback = [f"• {it.get('som', '')}" for it in recent[-10:] if it.get('som')]
+        return fallback or ["• Wax war muhiim ah lama diiwaangelin maanta."]
+
+
+def format_session_summary(info: Dict[str, str], bullets: List[str], now: datetime) -> str:
+    """Assemble the final session-summary message."""
+    date_str = now.strftime("%d %b %Y")
+    sep = "━━━━━━━━━━━━━━━━━━━━"
+    head = (
+        f"📋 *KOOBITAANKA SUUQA*\n"
+        f"{info['emoji']} {info['name']} • {date_str}\n"
+        f"🕐 {info['window']} (EAT)"
+    )
+    body = "\n\n".join(bullets)
+    return f"{head}\n{sep}\n{body}\n{sep}\n📡 HMM News"
+
+
+async def _post_summary(bot, message: str, category: str = "NO_MARKET_IMPACT"):
+    try:
+        await bot.send_message(
+            chat_id=TELEGRAM_CHANNEL_ID,
+            text=message,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+        await send_to_facebook(message)
+    except Exception as e:
+        logging.error(f"❌ Summary post error: {e}")
+
+
+async def maybe_post_session_summaries(bot):
+    """
+    Called every loop. Posts the latest due session summary (if any).
+    If multiple sessions are due (e.g. bot was offline), only the latest
+    is posted but all earlier ones are marked done to avoid spam.
+    """
+    now = eat_now()
+    minutes_now = now.hour * 60 + now.minute
+
+    state = get_summary_state()
+    posted = set(state.get("posted_sessions", []))
+
+    due = [k for k in SESSION_SEQUENCE
+           if minutes_now >= SESSIONS[k]["minute"] and k not in posted]
+    if not due:
+        return
+
+    target_key = due[-1]  # latest due session
+    info = SESSIONS[target_key]
+
+    logging.info(f"📋 Posting session summary: {target_key} ({info['name']})")
+    bullets = await build_session_bullets(state.get("items", []))
+    msg = format_session_summary(info, bullets, now)
+    await _post_summary(bot, msg)
+
+    # Mark all due sessions as posted
+    for k in due:
+        if k not in state["posted_sessions"]:
+            state["posted_sessions"].append(k)
+    save_summary_state(state)
+
+
+async def force_deploy_summary(bot):
+    """
+    FIRST DEPLOYMENT: post a one-time recap of the last 24 hours pulled
+    from the feeds. Runs once per day (guarded by deploy_done) so a
+    container restart on the same day won't repost it.
+    """
+    state = get_summary_state()
+    if state.get("deploy_done"):
+        logging.info("⏭️ Deploy summary already done today — skipping.")
+        return
+
+    cutoff = time.time() - 24 * 3600
+    titles = []
+    for url in RSS_URLS:
+        try:
+            feed = feedparser.parse(url)
+            for e in feed.entries:
+                pub = e.get("published_parsed")
+                ts = time.mktime(pub) if pub else 0.0
+                if ts < cutoff:
+                    continue
+                raw = e.title or ""
+                if not raw:
+                    continue
+                if any(k in raw.lower() for k in EXCLUSION_KEYWORDS):
+                    continue
+                if should_skip_regional(raw):
+                    continue
+                titles.append((ts, clean_title(raw)))
+        except Exception:
+            pass
+
+    titles.sort(key=lambda x: x[0])
+    items = []
+    for ts, t in titles[-MAX_SUMMARY_ITEMS:]:
+        items.append({"ts": ts, "som": t, "flag": "", "imp": "Low",
+                      "iran": is_iran_war_news(t)})
+
+    now = eat_now()
+    logging.info(f"🚀 Forcing 24h deploy summary from {len(items)} items.")
+    bullets = await build_session_bullets(items)
+    info = {"emoji": "🚀", "name": "Koobitaanka 24-Saac ee La Soo Dhaafay",
+            "window": "24 saac la soo dhaafay"}
+    msg = format_session_summary(info, bullets, now)
+    await _post_summary(bot, msg)
+
+    # Mark deploy done AND mark already-passed sessions as posted so we
+    # don't immediately fire a redundant session summary right after deploy.
+    minutes_now = now.hour * 60 + now.minute
+    for k in SESSION_SEQUENCE:
+        if minutes_now >= SESSIONS[k]["minute"] and k not in state["posted_sessions"]:
+            state["posted_sessions"].append(k)
+    state["deploy_done"] = True
+    save_summary_state(state)
+
+# ==================================================================
+# 6. HELPER FUNCTIONS
+# ==================================================================
+
+def get_bot_state():
+    try:
+        doc = db.collection('bot_state').document('forex_state').get()
+        if doc.exists:
+            data = doc.to_dict()
+            if "processed_links" not in data:
+                data["processed_links"] = []
+            if "processed_titles" not in data:
+                data["processed_titles"] = []
+            return data
+        return {"last_link": None, "last_time": 0.0, "processed_links": [], "processed_titles": []}
+    except Exception:
+        return {"last_link": None, "last_time": 0.0, "processed_links": [], "processed_titles": []}
+
+
+def save_bot_state(last_link, last_time, processed_links=None, processed_titles=None):
+    try:
+        update_data = {"last_link": last_link, "last_time": last_time}
+        if processed_links is not None:
+            update_data["processed_links"] = processed_links[-200:]
+        if processed_titles is not None:
+            # Keep last 200 title fingerprints
+            update_data["processed_titles"] = processed_titles[-200:]
+        db.collection('bot_state').document('forex_state').set(
+            update_data, merge=True
+        )
+    except Exception as e:
+        logging.error(f"DB Error: {e}")
+
+
+def normalize_title(title: str) -> str:
+    """
+    Create a normalized fingerprint from a headline for dedup.
+    Strips punctuation, whitespace, lowercases, and removes numbers
+    so that 'US PCE MoM: 0.3% (exp 0.3%, prev 0.4%)' and
+    'US PCE MoM: 0.3% (Exp 0.3%, Prev 0.4%)' match.
+    Also strips common prefixes like 'FinancialJuice:'.
+    """
+    t = title.lower().strip()
+    # Remove source prefix
+    t = re.sub(r"^[^:]+:\s*", "", t)
+    # Remove all numbers and % signs (the data values change but the indicator is the same)
+    t = re.sub(r"[\d.%]+", "", t)
+    # Remove punctuation and extra whitespace
+    t = re.sub(r"[^\w\s]", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def get_flag_and_impact(text):
+    flag = None
+    impact = None
+    detected_currency_code = "USD"
+
+    for k, f in TARGET_CURRENCIES.items():
+        if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
+            flag = f
+            if   f == "🇺🇸": detected_currency_code = "USD"
+            elif f == "🇪🇺": detected_currency_code = "EUR"
+            elif f == "🇯🇵": detected_currency_code = "JPY"
+            elif f == "🇬🇧": detected_currency_code = "GBP"
+            elif f == "🇨🇦": detected_currency_code = "CAD"
+            elif f == "🇦🇺": detected_currency_code = "AUD"
+            elif f == "🇳🇿": detected_currency_code = "NZD"
+            elif f == "🇨🇭": detected_currency_code = "CHF"
+            break
+
+    for k in RED_FOLDER_KEYWORDS:
+        if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
+            impact = "🔴"
+            break
+    if not impact:
+        for k in ORANGE_FOLDER_KEYWORDS:
+            if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
+                impact = "🟠"
+                break
+
+    return flag, impact, detected_currency_code
+
+
+def should_buffer(text):
+    for k in CLUSTER_KEYWORDS:
+        if re.search(r"\b" + re.escape(k) + r"\b", text, re.IGNORECASE):
+            return True
+    return False
+
+
+def clean_title(t):
+    t = re.sub(r"[\U0001F1E6-\U0001F1FF]{2}:?\s*", "", t)
+    t = re.sub(r"^[^:]+:\s*", "", t).strip()
+    return t
+
+
+def apply_glossary(text):
+    # Protect Somali phrases that contain words colliding with English glossary keys.
+    # "Cad" (white/clear) collides with CAD currency; "Aqalka Cad" must survive intact.
+    protected = [
+        (r"Aqalka\s+Cad", "AQALKA_TEMP_PLACEHOLDER"),
+        (r"\bsi\s+cad\b", "SI_CAD_TEMP_PLACEHOLDER"),       # "clearly"
+        (r"\bsi\s+cadi?\b", "SI_CADI_TEMP_PLACEHOLDER"),     # "clearly" variant
+        (r"\bmid\s+cad\b", "MID_CAD_TEMP_PLACEHOLDER"),      # "a clear one"
+    ]
+    for pat, placeholder in protected:
+        text = re.sub(pat, placeholder, text, flags=re.IGNORECASE)
+
+    for eng, som in GLOSSARY.items():
+        pattern = re.compile(r"\b" + re.escape(eng) + r"\b", re.IGNORECASE)
+        text = pattern.sub(som, text)
+
+    # Restore protected phrases
+    text = text.replace("AQALKA_TEMP_PLACEHOLDER", "Aqalka Cad")
+    text = text.replace("SI_CAD_TEMP_PLACEHOLDER", "si cad")
+    text = text.replace("SI_CADI_TEMP_PLACEHOLDER", "si cad")
+    text = text.replace("MID_CAD_TEMP_PLACEHOLDER", "mid cad")
+    return text
+
+
+# Currency codes handled SEPARATELY with case-sensitive matching.
+# Only UPPERCASE ticker symbols get translated — lowercase forms are
+# either Somali words ("cad" = white) or unrelated tokens.
+CURRENCY_CODE_MAP = {
+    "USD": "doollar Mareykanka",
+    "EUR": "yuuro",
+    "JPY": "yen-ka Japan",
+    "GBP": "gini Ingiriis",
+    "CHF": "franka Swiss-ka",
+    "CAD": "doollar Kanada",
+    "AUD": "doollar Australia",
+    "NZD": "doollar New Zealand",
+}
+
+
+def apply_currency_codes(text):
+    """
+    Replace UPPERCASE currency tickers with Somali names.
+    Case-sensitive on purpose: 'CAD' becomes 'doollar Kanada',
+    but lowercase 'cad' (Somali for 'white/clear') is left alone.
+    Skips common trading terms (XAUUSD, EURUSD, DXY, etc.) where
+    currency codes are part of an instrument name.
+    """
+    # Protect compound trading instruments first (XAUUSD, EURUSD, USDJPY...)
+    # so we don't mangle them
+    instrument_pattern = re.compile(
+        r"\b([A-Z]{3,6}/?[A-Z]{0,4})\b"
+    )
+    instruments = []
+    def stash_instrument(m):
+        token = m.group(0)
+        # only stash if it actually contains a currency code AND is compound
+        if len(token) >= 6 or "/" in token or token in {"DXY", "VIX"}:
+            instruments.append(token)
+            return f"__INSTR_{len(instruments)-1}__"
+        return token
+    text = instrument_pattern.sub(stash_instrument, text)
+
+    # Now replace standalone uppercase codes
+    for code, som in CURRENCY_CODE_MAP.items():
+        text = re.sub(r"\b" + code + r"\b", som, text)
+
+    # Restore instruments
+    for i, inst in enumerate(instruments):
+        text = text.replace(f"__INSTR_{i}__", inst)
+
+    return text
+
+
+def fix_somali_output(text):
+    """
+    Post-process AI-generated Somali text to fix recurring mistakes:
+    1. Trump must always be 'Madaxweynaha' (current president), never 'hore' (former).
+    2. Interest rate must always use 'dulsaar', never 'danaha' or 'ribada'.
+    """
+    # --- TRUMP FIXES ---
+    # "Madaxweynihii hore" / "madaxwaynihii hore" → "Madaxweynaha"
+    text = re.sub(r"[Mm]adaxweyni?hii\s+hore", "Madaxweynaha", text)
+    # "Madaxweynaha hore" → "Madaxweynaha"
+    text = re.sub(r"Madaxweynaha\s+hore", "Madaxweynaha", text, flags=re.IGNORECASE)
+    # "Donald Trump madaxweynihii hore" patterns
+    text = re.sub(r"madaxweyne\s+hore", "Madaxweynaha", text, flags=re.IGNORECASE)
+    # "ex-president" style references
+    text = re.sub(r"madaxweynihii\s+hore\s+ee\s+Mareykanka", "Madaxweynaha Mareykanka", text, flags=re.IGNORECASE)
+
+    # --- INTEREST RATE FIXES ---
+    # "heerka danaha" → "heerka dulsaar"
+    text = re.sub(r"heerka\s+danaha", "heerka dulsaar", text, flags=re.IGNORECASE)
+    # "heerarka danaha" → "heerarka dulsaar"
+    text = re.sub(r"heerarka\s+danaha", "heerarka dulsaar", text, flags=re.IGNORECASE)
+    # "heerka ribada" → "heerka dulsaar"
+    text = re.sub(r"heerka\s+ribada", "heerka dulsaar", text, flags=re.IGNORECASE)
+    # "heerarka ribada" → "heerarka dulsaar"
+    text = re.sub(r"heerarka\s+ribada", "heerarka dulsaar", text, flags=re.IGNORECASE)
+    # "heerka faa'idada" → "heerka dulsaar"
+    text = re.sub(r"heerka\s+faa['\u2019]?idada", "heerka dulsaar", text, flags=re.IGNORECASE)
+    # "heerarka faa'idada" → "heerarka dulsaar"
+    text = re.sub(r"heerarka\s+faa['\u2019]?idada", "heerarka dulsaar", text, flags=re.IGNORECASE)
+    # "qiimaha danaha" → "heerka dulsaar"
+    text = re.sub(r"qiimaha\s+danaha", "heerka dulsaar", text, flags=re.IGNORECASE)
+    # Catch "dana" standalone when preceded by rate-related context
+    text = re.sub(r"heerka\s+dana\b", "heerka dulsaar", text, flags=re.IGNORECASE)
+    text = re.sub(r"heerarka\s+dana\b", "heerarka dulsaar", text, flags=re.IGNORECASE)
+
+    return text
+
+
+def strip_markdown(text):
+    return text.replace("**", "").replace("__", "")
+
+
+# ==================================================================
+# 7. AI ANALYSIS ENGINE (UPGRADED)
+# ==================================================================
+
+CLASSIFICATION_SYSTEM_PROMPT = """You are a Somali-speaking Forex analyst writing news updates for a Telegram trading channel called "HMM News". You write EXCLUSIVELY in Somali — the entire output must be Somali (headlines, analysis, everything).
+
+YOUR WRITING STYLE (you must match this voice exactly):
+- You write like a knowledgeable trader talking directly to fellow traders ("saaxiibayaal")
+- Your tone is confident, direct, and conversational — like a friend explaining the market, not a robot
+- You mix Somali naturally with English trading terms (Bullish, Bearish, Sell, Buy, CPI, NFP, GDP, DXY etc.) — these English terms stay in English, everything else is Somali
+- You use "sidaa darteed" (therefore), "maaddaama" (since/because), "taas oo" (which) as natural connectors
+- You say "dulsaar" for interest rate, "sicirbarar" for inflation, "kor u kac" for rally, "hoos u dhac" for decline
+- You keep it SHORT and punchy — traders want the point fast, not essays
+- You explain WHY the data matters for the currency in 1-2 sentences max
+- Donald Trump is the CURRENT president. Always "Madaxweynaha Trump" — NEVER "hore" (former)
+
+REAL EXAMPLES OF YOUR STYLE (match this voice):
+- "CPI-da Maraykanka oo ku soo baxday tiro qabow — taas waxay ka dhigan tahay in sicirbararka soo yaraatay, Fed-na jari karo dulsaarka. DXY Bearish, Gold iyo EUR Bullish."
+- "DEGDEG: Trump ayaa cashuur cusub ku soo rogay Shiinaha. Suuqyada waa qasan yihiin. Gold kor ayuu u kacay, DXY na hoos ayay u dhacday."
+- "Powell ayaa ku hadlay sidii weekgii hore — sicirbararka waa sare, suuqa shaqaduna hoos ayuu u dhacay. Wax ifafaale ah ma muujin in la dhimi doono dulsaarka."
+- "NFP tirada shaqaalaha oo ka badan wixii la filayay — dhaqaaluhu xooggan yahay, USD Bullish."
+- "Warkani waa war si wayn u saamyn doona lacagaha USD, EUR iyo Gold usbuucan."
+
+YOUR JOB:
+1. CLASSIFY the news headline into exactly one category.
+2. WRITE the headline in Somali (your natural style — confident, direct, conversational).
+3. For MARKET-RELEVANT news, identify ALL affected assets (Gold, DXY, Equities, Crypto, FX pairs) — not just one currency.
+
+ALLOWED CATEGORIES:
+- MACRO_DATA — GDP, CPI, PPI, NFP, unemployment, retail sales, PMI, ISM, housing data
+- CENTRAL_BANK — Fed, ECB, BOE, BOJ, RBA, RBNZ, BOC, SNB announcements, speeches, decisions
+- MONETARY_POLICY — Interest rate changes, QE/QT, forward guidance, dot plot, balance sheet
+- GEOPOLITICS — International tensions, sanctions, trade wars, territorial disputes
+- WAR_UPDATE — Active military conflicts, missile strikes, ceasefire talks, defense news
+- CORPORATE — Earnings, mergers, layoffs, company-specific news
+- DIPLOMACY — Peace talks, diplomatic meetings, treaties, international agreements
+- GENERAL_POLITICS — Elections, legislation, political appointments, domestic policy
+- NO_MARKET_IMPACT — Celebrity, weather, sports, social media, non-financial news
+
+MARKET IMPACT RULES — MACRO DATA ONLY. Be STRICT.
+
+⚠️ CRITICAL: Directional "impacts" are allowed ONLY for these three categories:
+  • MACRO_DATA (CPI, NFP, GDP, PPI, retail sales, PCE, unemployment, PMI/ISM)
+  • CENTRAL_BANK (Fed/ECB/BOE/BOJ rate decisions and official policy statements)
+  • MONETARY_POLICY (actual rate changes, QE/QT, forward guidance)
+
+For EVERY OTHER category — GEOPOLITICS, WAR_UPDATE, DIPLOMACY, GENERAL_POLITICS,
+CORPORATE, NO_MARKET_IMPACT — you MUST return "impacts": [] (empty).
+
+WHY: Headline-driven moves (wars, tariffs, summits, Iran tension) are unpredictable.
+A de-escalation or "agreement reached" headline can send Gold UP, while an escalation
+can send it DOWN — the same event can flip direction with one word. We do NOT guess
+direction on headlines. We only call direction on hard macro data where cause→effect
+is reliable. A trader will ACT on this list; wrong signals lose money.
+
+FOR MACRO DATA ONLY — how to set direction (only when CLEAR and HIGH-CONFIDENCE):
+- Strong Hawkish (rate hike, hot CPI clearly above forecast) → that currency BULLISH, DXY Bullish, Gold Bearish
+- Strong Dovish (rate cut, weak NFP clearly below forecast) → that currency BEARISH, DXY Bearish, Gold Bullish
+- Mixed / in-line / minor data / speeches without a decision → "impacts": []
+
+EXAMPLES — return "impacts": [] (NO direction):
+- "Trump halts planned strikes on Iran, agreement reached" → headline, NO direction
+- "Iran launches missiles at US base" → headline, NO direction
+- "Trump announces tariffs on China" → headline, NO direction
+- "Ceasefire signed" / "Peace talks resume" → headline, NO direction
+- "Fed official speaks at conference" → no decision, NO direction
+
+EXAMPLES — populate impacts (macro only):
+- "Fed cuts rates by 50bp" → USD Bearish, DXY Bearish, Gold Bullish
+- "US CPI prints 0.5% vs 0.2% expected" → USD Bullish, DXY Bullish, Gold Bearish
+- "NFP 350k vs 180k expected" → USD Bullish, DXY Bullish, Gold Bearish
+- "ECB holds rates, signals cuts ahead" → EUR Bearish
+
+You STILL classify and translate every headline (including Iran/war/geopolitics) — you
+just leave "impacts" empty for everything that is not hard macro data.
+
+Use NO_MARKET_IMPACT category for genuinely non-financial news (celebrity, sports, weather).
+
+SOMALI TERMINOLOGY (mandatory):
+- "interest rate" = "heerka dulsaar" (NEVER "danaha", "ribada", "faa'idada")
+- "interest rates" = "heerarka dulsaar"
+- "rate cut" = "dhimista heerka dulsaar"
+- "rate hike" = "kor u qaadista heerka dulsaar"
+- "inflation" = "sicirbarar"
+- "rally" = "kor u kac"
+- "decline/drop" = "hoos u dhac"
+- Donald Trump = "Madaxweynaha Trump" (CURRENT president, NEVER "hore")
+- "White House" = "Aqalka Cad" (NEVER translate "Cad" as a currency)
+
+RESPOND IN VALID JSON ONLY. No markdown, no backticks.
+
+{
+  "category": "CATEGORY_NAME",
+  "headline_somali": "Somali headline in YOUR STYLE — direct, confident, conversational. Include data numbers when present.",
+  "importance": "High" or "Medium" or "Low" or "NONE",
+  "smart_header": "Somali contextual header e.g. XOGTA DHAQAALAHA MARAYKANKA or BANGIGA FED",
+  "impacts": [
+    {"asset": "USD",  "direction": "Bullish"},
+    {"asset": "DXY",  "direction": "Bullish"},
+    {"asset": "Gold", "direction": "Bearish"}
+  ]
+}
+
+ASSET NAMES allowed in "impacts": Gold, DXY, Equities, Crypto, Oil, USD, EUR, JPY, GBP, CHF, CAD, AUD, NZD, CNH
+DIRECTION allowed: Bullish, Bearish
+Remember: impacts ONLY for MACRO_DATA / CENTRAL_BANK / MONETARY_POLICY. Everything else → []."""
+
+
+async def classify_and_analyze(headline: str, currency_code: str = "USD") -> Dict[str, Any]:
+    """
+    Single AI call that classifies, translates, analyzes, and structures the news.
+    """
+    default_result = {
+        "category": "NO_MARKET_IMPACT",
+        "headline_somali": "",
+        "importance": "NONE",
+        "smart_header": "WARARKA CAALAMKA",
+        "impacts": []
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
+
+            user_content = (
+                f"Headline: {headline}\n"
+                f"Detected currency context: {currency_code}\n"
+                f"Write this in your Somali style. List ALL affected assets in 'impacts'. "
+                f"Respond in JSON only."
+            )
+
+            resp = await client.chat.completions.create(
+                model=AI_MODEL,
+                messages=[
+                    {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content}
+                ],
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+            raw_output = resp.choices[0].message.content.strip()
+
+            # Clean potential markdown fences
+            raw_output = re.sub(r"^```(?:json)?\s*", "", raw_output)
+            raw_output = re.sub(r"\s*```$", "", raw_output)
+
+            data = json.loads(raw_output)
+
+            # Validate category
+            cat = data.get("category", "NO_MARKET_IMPACT")
+            if cat not in VALID_CATEGORIES:
+                cat = "NO_MARKET_IMPACT"
+            data["category"] = cat
+
+            # Validate / sanitize impacts
+            impacts = data.get("impacts", [])
+            if not isinstance(impacts, list):
+                impacts = []
+            clean_impacts = []
+            for imp in impacts:
+                if not isinstance(imp, dict):
+                    continue
+                asset = str(imp.get("asset", "")).strip()
+                direction = str(imp.get("direction", "")).strip().capitalize()
+                if asset in VALID_ASSETS and direction in VALID_DIRECTIONS:
+                    clean_impacts.append({"asset": asset, "direction": direction})
+            # ENFORCE: directional impacts ONLY for macro / central-bank /
+            # monetary-policy news. Geopolitics, war, diplomacy, politics, and
+            # general headlines NEVER get a directional call — headline moves
+            # are unreliable and the bias is reserved for macro sentiment.
+            if cat not in MARKET_SIGNAL_CATEGORIES:
+                clean_impacts = []
+            data["impacts"] = clean_impacts
+
+            # Apply glossary + style fixes to Somali text
+            data["headline_somali"] = apply_glossary(data.get("headline_somali", ""))
+            data["headline_somali"] = apply_currency_codes(data["headline_somali"])
+            data["headline_somali"] = fix_somali_output(data["headline_somali"])
+            data["smart_header"] = data.get("smart_header", "WARARKA CAALAMKA")
+
+            return data
+
+    except json.JSONDecodeError as e:
+        logging.error(f"❌ AI JSON parse error: {e}")
+        return default_result
+    except Exception as e:
+        logging.error(f"❌ AI analysis error: {e}")
+        return default_result
+
+
+async def summarize_cluster(headlines: List[str], currency_code: str = "USD") -> Dict[str, Any]:
+    """
+    Summarize a cluster of buffered headlines with Saki's voice.
+    """
+    joined = "\n".join(f"- {h}" for h in headlines)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
+
+            user_content = (
+                f"Multiple related headlines about {currency_code}:\n{joined}\n\n"
+                f"Summarize the overall theme in your Somali style. "
+                f"List ALL affected assets in 'impacts'. Respond in JSON only."
+            )
+
+            resp = await client.chat.completions.create(
+                model=AI_MODEL,
+                messages=[
+                    {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content}
+                ],
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+            raw_output = resp.choices[0].message.content.strip()
+            raw_output = re.sub(r"^```(?:json)?\s*", "", raw_output)
+            raw_output = re.sub(r"\s*```$", "", raw_output)
+
+            data = json.loads(raw_output)
+
+            cat = data.get("category", "NO_MARKET_IMPACT")
+            if cat not in VALID_CATEGORIES:
+                cat = "NO_MARKET_IMPACT"
+            data["category"] = cat
+
+            # Validate impacts
+            impacts = data.get("impacts", [])
+            if not isinstance(impacts, list):
+                impacts = []
+            clean_impacts = []
+            for imp in impacts:
+                if not isinstance(imp, dict):
+                    continue
+                asset = str(imp.get("asset", "")).strip()
+                direction = str(imp.get("direction", "")).strip().capitalize()
+                if asset in VALID_ASSETS and direction in VALID_DIRECTIONS:
+                    clean_impacts.append({"asset": asset, "direction": direction})
+            # ENFORCE: directional impacts ONLY for macro categories.
+            if cat not in MARKET_SIGNAL_CATEGORIES:
+                clean_impacts = []
+            data["impacts"] = clean_impacts
+
+            data["headline_somali"] = apply_glossary(data.get("headline_somali", ""))
+            data["headline_somali"] = apply_currency_codes(data["headline_somali"])
+            data["headline_somali"] = fix_somali_output(data["headline_somali"])
+
+            return data
+
+    except Exception as e:
+        logging.error(f"❌ Cluster analysis error: {e}")
+        return {
+            "category": "NO_MARKET_IMPACT",
+            "headline_somali": "Warbixin kooban lama heli karo.",
+            "importance": "NONE",
+            "smart_header": "WARARKA CAALAMKA",
+            "impacts": []
+        }
+
+
+# ==================================================================
+# 8. MESSAGE FORMATTING
+# ==================================================================
+
+def _format_impact_line(asset: str, direction: str) -> str:
+    """Build one well-aligned asset/direction row for the impact block."""
+    emoji = ASSET_EMOJI.get(asset, "")
+    if direction == "Bullish":
+        arrow = "📈"
+    elif direction == "Bearish":
+        arrow = "📉"
+    else:
+        return ""
+    # Pad the asset name so all rows align visually on mobile
+    return f"  {emoji} `{asset:<8}` {arrow} *{direction}*"
+
+
+def format_message(analysis: Dict[str, Any], flag: str = "", impact_dot: str = "") -> str:
+    """
+    Build a clean, structured message.
+
+    LAYOUT RULES:
+      • Iran war / High-impact news  → prominent "DEGDEG — {SMART_HEADER}" banner on top,
+                                       then headline, then the impact block.
+      • Medium / Low importance news → headline only. NO impact block.
+                                       (Bias is reserved for high-impact news only.)
+      • The impact block shows ONLY when importance == "High" AND impacts is non-empty.
+    """
+    category     = analysis.get("category", "NO_MARKET_IMPACT")
+    headline_som = (analysis.get("headline_somali") or "").strip()
+    importance   = analysis.get("importance", "NONE")
+    impacts      = analysis.get("impacts", []) or []
+    smart_header = (analysis.get("smart_header") or "").strip()
+    is_iran_war  = analysis.get("is_iran_war", False)
+
+    lines = []
+
+    # ----- TOP BANNER (High-impact only) -----
+    if is_iran_war:
+        # Iran war banner — use the smart_header (e.g. "XIISADDA IRAN IYO MARAYKANKA")
+        header = smart_header or "XIISADDA IRAN IYO MARAYKANKA"
+        lines.append(f"🚨 *DEGDEG — {header}* ⚔️")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+    elif importance == "High" and smart_header:
+        # Category-specific banner for other high-impact news
+        lines.append(f"🚨 *DEGDEG — {smart_header}*")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    # ----- HEADLINE -----
+    if headline_som:
+        prefix = flag.strip() if flag else ""
+        if prefix:
+            lines.append(f"{prefix} {headline_som}")
+        else:
+            lines.append(headline_som)
+
+    # ----- IMPACT BLOCK -----
+    # Shown ONLY for macro / central-bank / monetary-policy news at High
+    # importance. Headline / geopolitical / war news never shows a direction
+    # (the validators already strip impacts for non-macro categories, but we
+    # gate here too for safety).
+    if category in MARKET_SIGNAL_CATEGORIES and importance == "High" and impacts:
+        rendered_rows = [_format_impact_line(i.get("asset", ""), i.get("direction", "")) for i in impacts]
+        rendered_rows = [r for r in rendered_rows if r]
+        if rendered_rows:
+            lines.append("")
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append("📊 *Saameynta Suuqa*")
+            lines.extend(rendered_rows)
+
+    return "\n".join(lines)
+
+
+# ==================================================================
+# 9. FACEBOOK HANDLER
+# ==================================================================
+
+async def send_to_facebook(text: str, image_path: str = None):
+    if not FACEBOOK_ACCESS_TOKEN or not FACEBOOK_PAGE_ID:
+        return
+
+    try:
+        async with httpx.AsyncClient() as client:
+            if image_path and os.path.exists(image_path):
+                # Post with image
+                url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/photos"
+                with open(image_path, "rb") as img:
+                    await client.post(
+                        url,
+                        data={
+                            "caption": strip_markdown(text),
+                            "access_token": FACEBOOK_ACCESS_TOKEN
+                        },
+                        files={"source": ("banner.png", img, "image/png")}
+                    )
+            else:
+                # Text-only post
+                url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/feed"
+                await client.post(
+                    url,
+                    data={
+                        "message": strip_markdown(text),
+                        "access_token": FACEBOOK_ACCESS_TOKEN
+                    }
+                )
+    except Exception as e:
+        logging.error(f"❌ FB Error: {e}")
+
+
+# ==================================================================
+# 10. BANNER INSERTION LOGIC
+# ==================================================================
+
+async def maybe_send_banner(bot: Bot, category: str):
+    """
+    Send a visual banner image if the post counter threshold is reached.
+    """
+    global post_counter
+    post_counter += 1
+
+    if post_counter < BANNER_INTERVAL:
+        return
+    if generate_banner is None:
+        return
+
+    post_counter = 0  # Reset
+
+    header_text = CATEGORY_HEADERS.get(category, "📰 GLOBAL NEWS UPDATE")
+    # Strip emoji for banner text
+    banner_text = re.sub(r"[^\w\s&\-]", "", header_text).strip().upper()
+    if not banner_text:
+        banner_text = "MARKET UPDATE"
+
+    color = CATEGORY_COLORS.get(category, (100, 100, 100))
+
+    try:
+        image_path = generate_banner(
+            text=banner_text,
+            bg_color=color,
+            output_path="/tmp/banner_latest.png"
+        )
+        if image_path and os.path.exists(image_path):
+            # Send to Telegram
+            with open(image_path, "rb") as img:
+                await bot.send_photo(
+                    chat_id=TELEGRAM_CHANNEL_ID,
+                    photo=img,
+                    caption=f"━━  {banner_text}  ━━"
+                )
+            # Send to Facebook
+            await send_to_facebook(f"━━  {banner_text}  ━━", image_path=image_path)
+            logging.info(f"🖼️ Banner sent: {banner_text}")
+    except Exception as e:
+        logging.error(f"❌ Banner error: {e}")
+
+
+# ==================================================================
+# 11. MAIN PROCESSING LOGIC
+# ==================================================================
+
+async def process_news_feed(bot: Bot):
+    state = get_bot_state()
+    last_link = state.get('last_link')
+    last_time = state.get('last_time', 0.0)
+    processed_links = set(state.get('processed_links', []))
+    processed_titles = set(state.get('processed_titles', []))
+
+    new_items = []
+    for url in RSS_URLS:
+        try:
+            feed = feedparser.parse(url)
+            for e in feed.entries:
+                link = e.get("link", "")
+                raw_title = e.title or ""
+
+                # DEDUP 1: Skip if we've already processed this exact link
+                if link and link in processed_links:
+                    continue
+
+                # DEDUP 2: Skip if title fingerprint already seen
+                # (catches same headline republished with a new URL)
+                title_fp = normalize_title(raw_title)
+                if title_fp and title_fp in processed_titles:
+                    # Still record the link so we don't re-check it
+                    if link:
+                        processed_links.add(link)
+                    logging.debug(f"⏭️ Title dedup skip: {raw_title[:60]}")
+                    continue
+
+                # Also skip if older than our last saved timestamp
+                pub = e.get("published_parsed")
+                if pub and time.mktime(pub) <= last_time:
+                    continue
+
+                new_items.append(e)
+        except Exception:
+            pass
+
+    new_items.sort(key=lambda x: x.get("published_parsed") or time.gmtime())
+
+    if new_items:
+        latest_timestamp = last_time
+        latest_link = last_link
+
+        for e in new_items:
+            raw = e.title or ""
+            link = e.get("link", "")
+            title_fp = normalize_title(raw)
+
+            if any(k in raw.lower() for k in EXCLUSION_KEYWORDS):
+                if link:
+                    processed_links.add(link)
+                if title_fp:
+                    processed_titles.add(title_fp)
+                continue
+
+            # ----- REGIONAL NOISE FILTER -----
+            # Drop small regional conflicts (Lebanon, Iraq, Korea, Yemen, etc.)
+            # unless Iran or major macro/US anchors are involved.
+            if should_skip_regional(raw):
+                if link:
+                    processed_links.add(link)
+                if title_fp:
+                    processed_titles.add(title_fp)
+                logging.info(f"⏭️ Regional noise skipped: {raw[:80]}")
+                continue
+
+            # ----- IRAN WAR DETECTION (priority lane) -----
+            iran_war = is_iran_war_news(raw)
+
+            flag, impact, cur_code = get_flag_and_impact(raw)
+
+            # Iran-war headlines bypass the "no flag" filter and get a war flag
+            if iran_war and not flag:
+                flag = "⚔️"
+                cur_code = "USD"  # Gold/DXY are USD-quoted
+
+            if not flag:
+                if link:
+                    processed_links.add(link)
+                if title_fp:
+                    processed_titles.add(title_fp)
+                continue
+
+            if not impact:
+                impact = ""
+
+            # BUFFER CHECK
+            if should_buffer(raw):
+                buffer_key = f"{flag}_SPEECH_{cur_code}"
+                current_time = time.time()
+                if buffer_key not in news_buffer:
+                    news_buffer[buffer_key] = {
+                        'headlines': [],
+                        'start_time': current_time,
+                        'currency': cur_code
+                    }
+                news_buffer[buffer_key]['headlines'].append(clean_title(raw))
+
+                if link:
+                    processed_links.add(link)
+                    latest_link = link
+                if title_fp:
+                    processed_titles.add(title_fp)
+                if e.get("published_parsed"):
+                    latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
+                continue
+
+            # --- UPGRADED: SINGLE AI CALL FOR CLASSIFICATION + ANALYSIS ---
+            logging.info(f"📰 Processing ({cur_code}): {raw}")
+            title = clean_title(raw)
+
+            analysis = await classify_and_analyze(title, currency_code=cur_code)
+
+            # ----- IRAN WAR OVERRIDE -----
+            # Force the bias to Saki's playbook regardless of what the AI guessed.
+            if iran_war:
+                analysis = apply_iran_war_override(analysis)
+                logging.info(f"⚔️ Iran war override applied: Gold Bearish / Oil Bullish / DXY Bullish")
+
+            # Format the structured message
+            msg = format_message(analysis, flag=flag, impact_dot=impact)
+
+            # Send to Telegram
+            try:
+                await bot.send_message(
+                    chat_id=TELEGRAM_CHANNEL_ID,
+                    text=msg,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
+            except Exception as e:
+                logging.error(f"❌ Telegram send error: {e}")
+
+            # Send to Facebook
+            await send_to_facebook(msg)
+
+            # Log to today's session summary
+            log_summary_item(
+                analysis.get("headline_somali", ""),
+                flag=flag,
+                importance=analysis.get("importance", "Low"),
+                iran=analysis.get("is_iran_war", False),
+            )
+
+            # Maybe insert a banner
+            await maybe_send_banner(bot, analysis.get("category", "NO_MARKET_IMPACT"))
+
+            # Track state
+            if link:
+                processed_links.add(link)
+                latest_link = link
+            if title_fp:
+                processed_titles.add(title_fp)
+            if e.get("published_parsed"):
+                latest_timestamp = max(latest_timestamp, time.mktime(e.get("published_parsed")))
+
+        save_bot_state(
+            latest_link, latest_timestamp,
+            processed_links=list(processed_links),
+            processed_titles=list(processed_titles)
+        )
+
+    # --- PROCESS BUFFERED CLUSTERS ---
+    current_time = time.time()
+    keys_to_delete = []
+
+    for key, data in news_buffer.items():
+        elapsed = current_time - data['start_time']
+        count = len(data['headlines'])
+
+        if elapsed > BUFFER_TIMEOUT_SECONDS or count >= MAX_BUFFER_SIZE:
+            cur_code = data.get('currency', 'USD')
+
+            # Upgraded cluster analysis
+            cluster_result = await summarize_cluster(data['headlines'], currency_code=cur_code)
+            flag_emoji = key.split("_")[0]
+
+            # Format the cluster message
+            msg = format_message(cluster_result, flag=flag_emoji, impact_dot="📣")
+
+            try:
+                await bot.send_message(
+                    chat_id=TELEGRAM_CHANNEL_ID,
+                    text=msg,
+                    parse_mode="Markdown"
+                )
+                await send_to_facebook(msg)
+            except Exception as e:
+                logging.error(f"❌ Cluster post error: {e}")
+
+            # Log cluster to session summary
+            log_summary_item(
+                cluster_result.get("headline_somali", ""),
+                flag=flag_emoji,
+                importance=cluster_result.get("importance", "Low"),
+                iran=cluster_result.get("is_iran_war", False),
+            )
+
+            # Maybe insert a banner
+            await maybe_send_banner(bot, cluster_result.get("category", "NO_MARKET_IMPACT"))
+
+            keys_to_delete.append(key)
+
+    for k in keys_to_delete:
+        del news_buffer[k]
+
+
+# ==================================================================
+# 12. ENTRY POINT
+# ==================================================================
+
+async def initialize_on_startup(bot: Bot):
+    """
+    STARTUP FLOOD PREVENTION
+    
+    On first boot or redeploy:
+    1. Fetch all current feed items.
+    2. Find the single most recent headline.
+    3. Post ONLY that one as a deployment test.
+    4. Save its link/timestamp so all older items are permanently skipped.
+    
+    If Firebase already has a valid state (bot was just restarted, not fresh),
+    we still check whether the stored state is stale. If the feed has moved
+    far ahead, we fast-forward to the latest item to avoid a flood.
+    """
+    state = get_bot_state()
+    stored_link = state.get("last_link")
+    stored_time = state.get("last_time", 0.0)
+
+    # Collect ALL current feed items
+    all_items = []
+    for url in RSS_URLS:
+        try:
+            feed = feedparser.parse(url)
+            for e in feed.entries:
+                pub = e.get("published_parsed")
+                ts = time.mktime(pub) if pub else 0.0
+                all_items.append((ts, e))
+        except Exception:
+            pass
+
+    if not all_items:
+        logging.info("📭 No feed items found on startup — entering live mode.")
+        return
+
+    # Sort by timestamp, newest last
+    all_items.sort(key=lambda x: x[0])
+    newest_ts, newest_entry = all_items[-1]
+    newest_link = newest_entry.get("link")
+
+    # Check if stored state is already current (normal restart, no gap)
+    if stored_link == newest_link or stored_time >= newest_ts:
+        logging.info("✅ Startup: state is current — no flood risk. Entering live mode.")
+        return
+
+    # Count how many items are newer than stored state
+    unseen_count = sum(1 for ts, _ in all_items if ts > stored_time)
+    logging.info(
+        f"⚠️ Startup: {unseen_count} unseen items in feed. "
+        f"Skipping history — posting only the latest headline."
+    )
+
+    # --- Post ONLY the newest headline as deployment test ---
+    # NOTE: Bypass the keyword pre-filter here. The AI classification
+    # engine handles relevance — the deployment post should always fire.
+    raw = newest_entry.title or ""
+
+    # Skip regional noise on startup too
+    if should_skip_regional(raw):
+        logging.info("⏭️ Latest headline is regional noise — skipping deployment post.")
+    elif not any(k in raw.lower() for k in EXCLUSION_KEYWORDS):
+        title = clean_title(raw)
+        iran_war = is_iran_war_news(raw)
+        flag, _, cur_code = get_flag_and_impact(raw)
+
+        # Default flag/currency if none detected
+        if iran_war and not flag:
+            flag = "⚔️"
+            cur_code = "USD"
+        if not flag:
+            flag = "🌍"
+        if not cur_code:
+            cur_code = "USD"
+
+        logging.info(f"🚀 Deployment post ({cur_code}): {title}")
+
+        analysis = await classify_and_analyze(title, currency_code=cur_code)
+        if iran_war:
+            analysis = apply_iran_war_override(analysis)
+        msg = format_message(analysis, flag=flag, impact_dot="")
+
+        try:
+            await bot.send_message(
+                chat_id=TELEGRAM_CHANNEL_ID,
+                text=msg,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+            await send_to_facebook(msg)
+            logging.info("✅ Deployment test post sent successfully.")
+        except Exception as e:
+            logging.error(f"❌ Deployment post failed: {e}")
+    else:
+        logging.info("⏭️ Latest headline is excluded — no deployment post.")
+
+    # --- Fast-forward state: save newest item AND all current links + titles ---
+    all_links = [e.get("link") for _, e in all_items if e.get("link")]
+    all_title_fps = [normalize_title(e.title or "") for _, e in all_items if e.title]
+    all_title_fps = [fp for fp in all_title_fps if fp]  # remove empties
+    save_bot_state(newest_link, newest_ts, processed_links=all_links, processed_titles=all_title_fps)
+    logging.info(
+        f"✅ State fast-forwarded. link={newest_link}, "
+        f"time={time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(newest_ts))}, "
+        f"seeded {len(all_links)} links + {len(all_title_fps)} title fingerprints"
+    )
+
+
+async def main():
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    logging.info(f"🚀 HMM News Bot Starting — Model: {AI_MODEL}")
+
+    # --- STEP 1: Startup initialization (prevents history flooding) ---
+    try:
+        await initialize_on_startup(bot)
+    except Exception as e:
+        logging.error(f"❌ Startup init error: {e}")
+
+    # --- STEP 1b: Force a 24-hour recap on first deployment of the day ---
+    try:
+        await force_deploy_summary(bot)
+    except Exception as e:
+        logging.error(f"❌ Deploy summary error: {e}")
+
+    # --- STEP 2: Live monitoring loop ---
+    logging.info("🔄 Entering live monitoring mode...")
+    while True:
+        try:
+            await process_news_feed(bot)
+        except Exception as e:
+            logging.error(f"❌ Main Error: {e}")
+
+        # Check whether any session summary is due (Asian/London/NY/Daily)
+        try:
+            await maybe_post_session_summaries(bot)
+        except Exception as e:
+            logging.error(f"❌ Session summary check error: {e}")
+
+        await asyncio.sleep(60)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
